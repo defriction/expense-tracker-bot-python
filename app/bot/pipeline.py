@@ -25,7 +25,7 @@ from app.bot.ui_models import BotAction, BotInput, BotKeyboard, BotMessage
 from app.core.config import Settings
 from app.core.logging import logger
 from app.services.groq import GroqClient, extract_json
-from app.services.sheets import ResilientSheetsRepo
+from app.services.repositories import DataRepo
 
 INVALID_TOKEN_MESSAGE = "Token de invitación inválido o expirado."
 INVALID_TX_MESSAGE = "Monto inválido o categoría faltante. Por favor intenta de nuevo."
@@ -41,15 +41,15 @@ def _kb(*rows: list[BotAction]) -> BotKeyboard:
 
 
 class PipelineBase:
-    def __init__(self, settings: Settings, sheets: Optional[ResilientSheetsRepo] = None, groq: Optional[GroqClient] = None) -> None:
+    def __init__(self, settings: Settings, repo: Optional[DataRepo] = None, groq: Optional[GroqClient] = None) -> None:
         self.settings = settings
-        self._sheets = sheets
+        self._repo = repo
         self._groq = groq
 
-    def _get_sheets(self) -> ResilientSheetsRepo:
-        if self._sheets is None:
-            raise RuntimeError("Sheets repository not configured")
-        return self._sheets
+    def _get_repo(self) -> DataRepo:
+        if self._repo is None:
+            raise RuntimeError("Data repository not configured")
+        return self._repo
 
     def _get_groq(self) -> GroqClient:
         if self._groq is None:
@@ -70,10 +70,10 @@ class AuthFlow:
     def __init__(self, pipeline: PipelineBase) -> None:
         self.pipeline = pipeline
 
-    def require_active_user(self, telegram_user_id: Optional[int]) -> ActiveUserResult:
-        if not telegram_user_id:
+    def require_active_user(self, channel: str, external_user_id: Optional[str]) -> ActiveUserResult:
+        if not external_user_id:
             return ActiveUserResult(None, UNAUTHORIZED_MESSAGE)
-        user = self.pipeline._get_sheets().find_user_by_telegram_id(str(telegram_user_id))
+        user = self.pipeline._get_repo().find_user_by_channel(channel, str(external_user_id))
         if not user or str(user.get("status")) != "active":
             return ActiveUserResult(None, UNAUTHORIZED_MESSAGE)
         return ActiveUserResult(user, None)
@@ -85,21 +85,21 @@ class OnboardingFlow:
 
     async def handle(self, command) -> BotMessage:
         chat_id = command.chat_id
-        telegram_user_id = command.telegram_user_id
-        logger.info("Onboarding start chat_id=%s user_id=%s", chat_id, telegram_user_id)
-        if not telegram_user_id:
+        external_user_id = command.user_id
+        logger.info("Onboarding start chat_id=%s user_id=%s", chat_id, external_user_id)
+        if not external_user_id:
             return self.pipeline._make_message(INVALID_TOKEN_MESSAGE)
 
-        sheets = self.pipeline._get_sheets()
-        invite = sheets.find_invite(command.invite_token)
+        repo = self.pipeline._get_repo()
+        invite = repo.find_invite(command.invite_token)
         if not invite or str(invite.get("status")) != "unused":
-            logger.warning("Onboarding invalid token chat_id=%s user_id=%s", chat_id, telegram_user_id)
+            logger.warning("Onboarding invalid token chat_id=%s user_id=%s", chat_id, external_user_id)
             return self.pipeline._make_message(INVALID_TOKEN_MESSAGE)
 
-        user_id = f"USR-{int(time.time() * 1000)}-{telegram_user_id}"
-        sheets.create_user(user_id, str(telegram_user_id), str(chat_id))
-        sheets.mark_invite_used(command.invite_token)
-        logger.info("Onboarding success chat_id=%s user_id=%s", chat_id, telegram_user_id)
+        user_id = f"USR-{int(time.time() * 1000)}-{external_user_id}"
+        repo.create_user(user_id, command.channel, str(external_user_id), str(chat_id) if chat_id is not None else None)
+        repo.mark_invite_used(command.invite_token, user_id)
+        logger.info("Onboarding success chat_id=%s user_id=%s", chat_id, external_user_id)
         keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
         return self.pipeline._make_message(ONBOARDING_SUCCESS_MESSAGE, keyboard)
 
@@ -110,22 +110,22 @@ class CommandFlow:
 
     async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
-        txs = self.pipeline._get_sheets().list_transactions(user.get("userId"))
+        txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_HELP])
         return self.pipeline._make_message(format_list_message(txs), keyboard)
 
     async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
-        txs = self.pipeline._get_sheets().list_transactions(user.get("userId"))
+        txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_HELP])
         return self.pipeline._make_message(format_summary_message(txs), keyboard)
 
     async def handle_undo(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Undo command chat_id=%s user_id=%s", chat_id, user.get("userId"))
-        txs = self.pipeline._get_sheets().list_transactions(user.get("userId"))
+        txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         picked = BotPipeline._pick_latest(txs)
         if picked.get("ok"):
-            self.pipeline._get_sheets().mark_transaction_deleted(str(picked["txId"]))
+            self.pipeline._get_repo().mark_transaction_deleted(str(picked["txId"]))
         keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
         return self.pipeline._make_message(format_undo_message(picked), keyboard)
 
@@ -192,15 +192,15 @@ class AiFlow:
         tx["isDeleted"] = tx.get("isDeleted", False)
         tx["deletedAt"] = tx.get("deletedAt", "")
 
-        self.pipeline._get_sheets().append_transaction(tx)
+        self.pipeline._get_repo().append_transaction(tx)
         logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx_id)
         keyboard = _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
         return self.pipeline._make_message(format_add_tx_message(tx), keyboard)
 
 
 class BotPipeline(PipelineBase):
-    def __init__(self, settings: Settings, sheets: Optional[ResilientSheetsRepo] = None, groq: Optional[GroqClient] = None) -> None:
-        super().__init__(settings, sheets, groq)
+    def __init__(self, settings: Settings, repo: Optional[DataRepo] = None, groq: Optional[GroqClient] = None) -> None:
+        super().__init__(settings, repo, groq)
         self.auth_flow = AuthFlow(self)
         self.onboarding_flow = OnboardingFlow(self)
         self.command_flow = CommandFlow(self)
@@ -208,12 +208,12 @@ class BotPipeline(PipelineBase):
 
     async def handle_message(self, request: BotInput) -> list[BotMessage]:
         chat_id = request.chat_id
-        telegram_user_id = request.user_id
+        external_user_id = request.user_id
         text = request.text
         logger.info(
             "Incoming message route=pending chat_id=%s user_id=%s has_text=%s has_voice=%s",
             chat_id,
-            telegram_user_id,
+            external_user_id,
             bool(text),
             bool(request.audio_bytes),
         )
@@ -226,13 +226,13 @@ class BotPipeline(PipelineBase):
         if not text:
             non_text_type = non_text_type or "non_text"
 
-        command = parse_command(text, chat_id, telegram_user_id, non_text_type)
+        command = parse_command(text, chat_id, external_user_id, non_text_type, request.channel)
 
         logger.info(
             "Parsed command route=%s chat_id=%s user_id=%s",
             command.route,
             chat_id,
-            telegram_user_id,
+            external_user_id,
         )
         if command.route == "onboarding":
             return [await self.onboarding_flow.handle(command)]
@@ -245,17 +245,21 @@ class BotPipeline(PipelineBase):
             keyboard = _kb([ACTION_HELP])
             return [self._make_message(NON_TEXT_MESSAGE, keyboard)]
 
-        auth_result = self.auth_flow.require_active_user(telegram_user_id)
+        auth_result = self.auth_flow.require_active_user(
+            request.channel,
+            str(external_user_id) if external_user_id is not None else None,
+        )
         if not auth_result.user:
             logger.warning(
                 "Unauthorized user chat_id=%s user_id=%s",
                 chat_id,
-                telegram_user_id,
+                external_user_id,
             )
             keyboard = _kb([ACTION_HELP])
             return [self._make_message(auth_result.error_message or UNAUTHORIZED_MESSAGE, keyboard)]
 
-        self._get_sheets().update_user_last_seen(str(telegram_user_id))
+        if external_user_id is not None:
+            self._get_repo().update_user_last_seen(request.channel, str(external_user_id))
 
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
@@ -275,15 +279,15 @@ class BotPipeline(PipelineBase):
 
     async def handle_callback(self, request: BotInput) -> list[BotMessage]:
         chat_id = request.chat_id
-        telegram_user_id = request.user_id
+        external_user_id = request.user_id
         text = request.text
         logger.info(
             "Incoming callback chat_id=%s user_id=%s has_data=%s",
             chat_id,
-            telegram_user_id,
+            external_user_id,
             bool(text),
         )
-        command = parse_command(text, chat_id, telegram_user_id, None)
+        command = parse_command(text, chat_id, external_user_id, None, request.channel)
 
         if command.route == "onboarding":
             return [await self.onboarding_flow.handle(command)]
@@ -293,16 +297,20 @@ class BotPipeline(PipelineBase):
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route in {"list", "summary", "undo", "ai"}:
-            auth_result = self.auth_flow.require_active_user(telegram_user_id)
+            auth_result = self.auth_flow.require_active_user(
+                request.channel,
+                str(external_user_id) if external_user_id is not None else None,
+            )
             if not auth_result.user:
                 logger.warning(
                     "Unauthorized callback chat_id=%s user_id=%s",
                     chat_id,
-                    telegram_user_id,
+                    external_user_id,
                 )
                 keyboard = _kb([ACTION_HELP])
                 return [self._make_message(auth_result.error_message or UNAUTHORIZED_MESSAGE, keyboard)]
-            self._get_sheets().update_user_last_seen(str(telegram_user_id))
+            if external_user_id is not None:
+                self._get_repo().update_user_last_seen(request.channel, str(external_user_id))
             if command.route == "list":
                 return [await self.command_flow.handle_list(auth_result.user, chat_id)]
             elif command.route == "summary":

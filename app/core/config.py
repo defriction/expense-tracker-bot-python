@@ -14,6 +14,7 @@ class Settings:
     google_service_account_json: Optional[str]
     google_service_account_file: Optional[str]
     admin_telegram_chat_id: Optional[str]
+    database_url: Optional[str]
     timezone: str = "America/Bogota"
 
 
@@ -40,6 +41,7 @@ def load_settings() -> Settings:
         google_service_account_json=_get_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
         google_service_account_file=_get_env("GOOGLE_SERVICE_ACCOUNT_FILE"),
         admin_telegram_chat_id=_get_env("ADMIN_TELEGRAM_CHAT_ID"),
+        database_url=_get_env("DATABASE_URL"),
     )
 
 

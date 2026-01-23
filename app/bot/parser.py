@@ -20,7 +20,8 @@ class ParsedCommand:
     text: str
     text_for_parsing: str
     chat_id: Optional[int]
-    telegram_user_id: Optional[int]
+    user_id: Optional[str | int]
+    channel: str
     non_text_type: Optional[str]
 
 
@@ -43,7 +44,13 @@ def _slang_mul(mult: int):
     return _repl
 
 
-def parse_command(text: Optional[str], chat_id: Optional[int], telegram_user_id: Optional[int], non_text_type: Optional[str]) -> ParsedCommand:
+def parse_command(
+    text: Optional[str],
+    chat_id: Optional[int],
+    user_id: Optional[str | int],
+    non_text_type: Optional[str],
+    channel: str = "telegram",
+) -> ParsedCommand:
     if not text:
         return ParsedCommand(
             route="non_text",
@@ -52,7 +59,8 @@ def parse_command(text: Optional[str], chat_id: Optional[int], telegram_user_id:
             text="",
             text_for_parsing="",
             chat_id=chat_id,
-            telegram_user_id=telegram_user_id,
+            user_id=user_id,
+            channel=channel,
             non_text_type=non_text_type or "non_text",
         )
 
@@ -84,7 +92,8 @@ def parse_command(text: Optional[str], chat_id: Optional[int], telegram_user_id:
         text=clean,
         text_for_parsing=normalize_amount_slang(clean),
         chat_id=chat_id,
-        telegram_user_id=telegram_user_id,
+        user_id=user_id,
+        channel=channel,
         non_text_type=non_text_type,
     )
 

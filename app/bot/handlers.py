@@ -11,7 +11,7 @@ from app.channels.telegram_adapter import download_voice_bytes, send_bot_message
 from app.core.config import Settings, load_settings
 from app.core.logging import logger, setup_logging, set_trace_id
 from app.services.groq import GroqClient
-from app.services.sheets import build_sheets_repo
+from app.services.data_repo import build_data_repo
 
 ERROR_WORKFLOW_NAME = "Finance Bot v2"
 USER_ERROR_MESSAGE = "⚠️ <b>Ocurrió un error</b>\nPor favor inténtalo más tarde."
@@ -60,7 +60,7 @@ class PipelineFactory:
         self.settings = settings
 
     def build(self) -> BotPipeline:
-        return BotPipeline(self.settings, build_sheets_repo(self.settings), GroqClient(self.settings))
+        return BotPipeline(self.settings, build_data_repo(self.settings), GroqClient(self.settings))
 
 
 def _get_pipeline() -> BotPipeline:
@@ -164,9 +164,9 @@ async def _notify_error(update, context, exc: Exception) -> None:
     logger.exception("Unhandled error chat_id=%s user_id=%s error=%s", chat_id, user_id, message)
     try:
         pipeline = _get_pipeline()
-        pipeline._get_sheets().append_error_log(ERROR_WORKFLOW_NAME, "handler", message)
+        pipeline._get_repo().append_error_log(ERROR_WORKFLOW_NAME, "handler", message, str(user_id) if user_id else None, str(chat_id) if chat_id else None)
     except Exception:
-        logger.warning("Failed to write error log to Sheets")
+        logger.warning("Failed to write error log to data store")
 
     if _settings:
         await ErrorNotifier(_settings).notify(update, context, message)

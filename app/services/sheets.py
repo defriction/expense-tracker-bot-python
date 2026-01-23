@@ -68,27 +68,33 @@ class SheetsRepo:
         except ValueError:
             return default
 
-    def find_user_by_telegram_id(self, telegram_user_id: str) -> Optional[Dict[str, Any]]:
+    def find_user_by_channel(self, channel: str, external_user_id: str) -> Optional[Dict[str, Any]]:
+        if channel != "telegram":
+            return None
         ws = self._worksheet("Users")
         records = self._get_records(ws)
-        record = self._find_record(records, "telegramUserId", str(telegram_user_id))
+        record = self._find_record(records, "telegramUserId", str(external_user_id))
         return record.data if record else None
 
-    def update_user_last_seen(self, telegram_user_id: str, timestamp: Optional[str] = None) -> None:
+    def update_user_last_seen(self, channel: str, external_user_id: str, timestamp: Optional[str] = None) -> None:
+        if channel != "telegram":
+            return
         ws = self._worksheet("Users")
         records = self._get_records(ws)
-        record = self._find_record(records, "telegramUserId", str(telegram_user_id))
+        record = self._find_record(records, "telegramUserId", str(external_user_id))
         if not record:
             return
         ts = timestamp or self._now_iso()
-        self._update_cells(ws, record.row_number, {"telegramUserId": telegram_user_id, "lastSeenAt": ts})
+        self._update_cells(ws, record.row_number, {"telegramUserId": external_user_id, "lastSeenAt": ts})
 
-    def create_user(self, user_id: str, telegram_user_id: str, chat_id: str) -> None:
+    def create_user(self, user_id: str, channel: str, external_user_id: str, chat_id: Optional[str]) -> None:
+        if channel != "telegram":
+            return
         ws = self._worksheet("Users")
         row = {
             "userId": user_id,
-            "telegramUserId": telegram_user_id,
-            "chatId": chat_id,
+            "telegramUserId": external_user_id,
+            "chatId": chat_id or "",
             "status": "active",
             "createdAt": self._now_iso(),
         }
@@ -100,13 +106,16 @@ class SheetsRepo:
         record = self._find_record(records, "inviteToken", invite_token)
         return record.data if record else None
 
-    def mark_invite_used(self, invite_token: str) -> None:
+    def mark_invite_used(self, invite_token: str, used_by_user_id: Optional[str]) -> None:
         ws = self._worksheet("Invites")
         records = self._get_records(ws)
         record = self._find_record(records, "inviteToken", invite_token)
         if not record:
             return
-        self._update_cells(ws, record.row_number, {"status": "used", "inviteToken": invite_token})
+        updates = {"status": "used", "inviteToken": invite_token}
+        if used_by_user_id is not None:
+            updates["usedByUserId"] = used_by_user_id
+        self._update_cells(ws, record.row_number, updates)
 
     def append_transaction(self, tx: Dict[str, Any]) -> None:
         ws = self._worksheet("Transactions")
@@ -143,13 +152,15 @@ class SheetsRepo:
             {"txId": tx_id, "isDeleted": "true", "updatedAt": now, "deletedAt": now},
         )
 
-    def append_error_log(self, workflow: str, node: str, message: str) -> None:
+    def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None:
         ws = self._worksheet("ErrorLogs")
         row = {
             "timestamp": self._now_iso(),
             "workflow": workflow,
             "node": node,
             "message": message,
+            "userId": user_id or "",
+            "chatId": chat_id or "",
         }
         self._append_row(ws, row)
 
@@ -191,20 +202,20 @@ class ResilientSheetsRepo:
             ),
         )
 
-    def find_user_by_telegram_id(self, telegram_user_id: str) -> Optional[Dict[str, Any]]:
-        return self._call(lambda: self._repo.find_user_by_telegram_id(telegram_user_id), "find_user_by_telegram_id")
+    def find_user_by_channel(self, channel: str, external_user_id: str) -> Optional[Dict[str, Any]]:
+        return self._call(lambda: self._repo.find_user_by_channel(channel, external_user_id), "find_user_by_channel")
 
-    def update_user_last_seen(self, telegram_user_id: str, timestamp: Optional[str] = None) -> None:
-        self._call(lambda: self._repo.update_user_last_seen(telegram_user_id, timestamp), "update_user_last_seen")
+    def update_user_last_seen(self, channel: str, external_user_id: str, timestamp: Optional[str] = None) -> None:
+        self._call(lambda: self._repo.update_user_last_seen(channel, external_user_id, timestamp), "update_user_last_seen")
 
-    def create_user(self, user_id: str, telegram_user_id: str, chat_id: str) -> None:
-        self._call(lambda: self._repo.create_user(user_id, telegram_user_id, chat_id), "create_user")
+    def create_user(self, user_id: str, channel: str, external_user_id: str, chat_id: Optional[str]) -> None:
+        self._call(lambda: self._repo.create_user(user_id, channel, external_user_id, chat_id), "create_user")
 
     def find_invite(self, invite_token: str) -> Optional[Dict[str, Any]]:
         return self._call(lambda: self._repo.find_invite(invite_token), "find_invite")
 
-    def mark_invite_used(self, invite_token: str) -> None:
-        self._call(lambda: self._repo.mark_invite_used(invite_token), "mark_invite_used")
+    def mark_invite_used(self, invite_token: str, used_by_user_id: Optional[str]) -> None:
+        self._call(lambda: self._repo.mark_invite_used(invite_token, used_by_user_id), "mark_invite_used")
 
     def append_transaction(self, tx: Dict[str, Any]) -> None:
         self._call(lambda: self._repo.append_transaction(tx), "append_transaction")
@@ -215,8 +226,8 @@ class ResilientSheetsRepo:
     def mark_transaction_deleted(self, tx_id: str) -> None:
         self._call(lambda: self._repo.mark_transaction_deleted(tx_id), "mark_transaction_deleted")
 
-    def append_error_log(self, workflow: str, node: str, message: str) -> None:
-        self._call(lambda: self._repo.append_error_log(workflow, node, message), "append_error_log")
+    def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None:
+        self._call(lambda: self._repo.append_error_log(workflow, node, message, user_id, chat_id), "append_error_log")
 
 
 def build_sheets_repo(settings: Settings) -> ResilientSheetsRepo:
