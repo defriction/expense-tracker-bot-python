@@ -1,14 +1,14 @@
 services:
-  telegram-bot:
+  expense-tracker-bot:
     build: .
-    container_name: telegram-bot
+    container_name: expense-tracker-bot
     restart: always
     env_file:
       - .env
     labels:
       - traefik.enable=true
-      - traefik.http.routers.telegrambot.rule=Host(`bot.srv1153123.hstgr.cloud`)
-      - traefik.http.routers.telegrambot.entrypoints=websecure
-      - traefik.http.routers.telegrambot.tls=true
-      - traefik.http.routers.telegrambot.tls.certresolver=mytlschallenge
-      - traefik.http.services.telegrambot.loadbalancer.server.port=8000
+      - traefik.http.routers.expense-tracker-bot.rule=Host(`bot.srv1153123.hstgr.cloud`)
+      - traefik.http.routers.expense-tracker-bot.entrypoints=websecure
+      - traefik.http.routers.expense-tracker-bot.tls=true
+      - traefik.http.routers.expense-tracker-bot.tls.certresolver=mytlschallenge
+      - traefik.http.services.expense-tracker-bot.loadbalancer.server.port=8000
