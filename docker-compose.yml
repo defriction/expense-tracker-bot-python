@@ -1,0 +1,22 @@
+services:
+  expense-tracker-bot:
+    build: .
+    container_name: expense-tracker-bot
+    restart: always
+    env_file:
+      - .env
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.expense-bot.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`/expense/v1`)
+      - traefik.http.routers.expense-bot.entrypoints=websecure
+      - traefik.http.routers.expense-bot.tls=true
+      - traefik.http.routers.expense-bot.tls.certresolver=mytlschallenge
+      - traefik.http.services.expense-bot.loadbalancer.server.port=8000
+      - traefik.http.middlewares.expense-strip.stripprefix.prefixes=/expense/v1
+      - traefik.http.routers.expense-bot.middlewares=expense-strip@docker
+
+networks:
+  proxy:
+    external: true
