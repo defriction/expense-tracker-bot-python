@@ -32,8 +32,7 @@ HELP_MESSAGE = (
 
 NON_TEXT_MESSAGE = (
     "<b>📎 Solo puedo leer texto por ahora</b>\n\n"
-    "Envíame un mensaje con texto (ej: <code>comí un pan 5k</code>).\n\n"
-    "Comandos rápidos: <code>/help</code> · <code>/list</code> · <code>/summary</code> · <code>/undo</code>"
+    "Envíame un mensaje con texto (ej: <code>comí un pan 5k</code>)."
 )
 
 UNAUTHORIZED_MESSAGE = (
@@ -45,11 +44,9 @@ UNAUTHORIZED_MESSAGE = (
 
 ONBOARDING_SUCCESS_MESSAGE = (
     "🎉 <b>Cuenta activada</b>\n\n"
-    "Ya puedes registrar movimientos:\n"
+    "Listo, ya puedes registrar movimientos:\n"
     "• <code>Café 6000</code>\n"
-    "• <code>Me pagaron 3m</code>\n\n"
-    "Y consultar:\n"
-    "• <code>/list</code> · <code>/summary</code> · <code>/undo</code>"
+    "• <code>Me pagaron 3m</code>"
 )
 
 
@@ -91,7 +88,6 @@ def format_add_tx_message(tx: Dict[str, object]) -> str:
     if tx.get("isRecurring"):
         lines.append(f"🔁 <b>Recurrente:</b> {tx.get('recurrence') or 'monthly'}")
 
-    lines.extend(["", "Acciones: <code>/undo</code> · <code>/list</code> · <code>/summary</code>"])
     return "\n".join(lines)
 
 
@@ -153,7 +149,6 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
             message.append(f"<code>{date}</code>")
         message.append("")
 
-    message.append("Acciones: <code>/undo</code> · <code>/summary</code>")
     return "\n".join(message).strip()
 
 
@@ -413,7 +408,6 @@ def format_summary_message(transactions: List[Dict[str, object]]) -> str:
     )
 
     message = "\n\n".join([header, entradas_block, salidas_block, kpis, insights, destacados])
-    message += "\n\nAcciones: <code>/list</code> · <code>/undo</code> · <code>/help</code>"
     return message
 
 
@@ -433,5 +427,4 @@ def format_undo_message(result: Dict[str, object]) -> str:
     if result.get("description"):
         lines.append(f"<b>Detalle:</b> <i>{result.get('description')}</i>")
 
-    lines.extend(["", "Acciones: <code>/list</code> · <code>/summary</code> · <code>/help</code>"])
     return "\n".join(lines)

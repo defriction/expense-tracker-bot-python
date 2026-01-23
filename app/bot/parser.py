@@ -141,7 +141,13 @@ def _norm_str(value: Any) -> str:
     return str(value or "").strip()
 
 
-def normalize_ai_response(parsed: Dict[str, Any], raw_text: str, chat_id: Optional[int], settings: Settings) -> Dict[str, Any]:
+def normalize_ai_response(
+    parsed: Dict[str, Any],
+    raw_text: str,
+    chat_id: Optional[int],
+    settings: Settings,
+    source: str,
+) -> Dict[str, Any]:
     today = _bogota_today()
     yesterday = _bogota_yesterday()
     has_user_date = _user_provided_date(raw_text)
@@ -227,7 +233,7 @@ def normalize_ai_response(parsed: Dict[str, Any], raw_text: str, chat_id: Option
         tx["recurrenceId"] = ""
 
     now = datetime.now(timezone.utc).isoformat()
-    tx["source"] = "telegram"
+    tx["source"] = source
     tx["sourceMessageId"] = ""
     tx["rawText"] = raw_text
     tx["createdAt"] = now
@@ -264,7 +270,7 @@ def normalize_types(tx: Dict[str, Any]) -> Dict[str, Any]:
     tx["category"] = str(tx.get("category", ""))
     tx["description"] = str(tx.get("description", ""))
 
-    tx["source"] = str(tx.get("source", "telegram"))
+    tx["source"] = str(tx.get("source", "unknown"))
     tx["sourceMessageId"] = str(tx.get("sourceMessageId", ""))
     tx["parserVersion"] = str(tx.get("parserVersion", "v1"))
 

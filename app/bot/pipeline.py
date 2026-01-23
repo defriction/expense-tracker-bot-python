@@ -4,9 +4,6 @@ from dataclasses import dataclass
 import time
 from typing import Any, Dict, Optional
 
-from telegram import Update
-from telegram.ext import ContextTypes
-
 from app.bot.formatters import (
     HELP_MESSAGE,
     NON_TEXT_MESSAGE,
@@ -24,6 +21,7 @@ from app.bot.parser import (
     normalize_types,
     parse_command,
 )
+from app.bot.ui_models import BotAction, BotInput, BotKeyboard, BotMessage
 from app.core.config import Settings
 from app.core.logging import logger
 from app.services.groq import GroqClient, extract_json
@@ -31,6 +29,15 @@ from app.services.sheets import ResilientSheetsRepo
 
 INVALID_TOKEN_MESSAGE = "Token de invitación inválido o expirado."
 INVALID_TX_MESSAGE = "Monto inválido o categoría faltante. Por favor intenta de nuevo."
+
+ACTION_LIST = BotAction("/list", "🧾 Movimientos")
+ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
+ACTION_UNDO = BotAction("/undo", "↩️ Deshacer")
+ACTION_HELP = BotAction("/help", "ℹ️ Ayuda")
+
+
+def _kb(*rows: list[BotAction]) -> BotKeyboard:
+    return BotKeyboard(rows=[row for row in rows if row])
 
 
 class PipelineBase:
@@ -49,15 +56,8 @@ class PipelineBase:
             raise RuntimeError("Groq client not configured")
         return self._groq
 
-    async def _reply(self, chat_id: Optional[int], text: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not chat_id:
-            return
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+    def _make_message(self, text: str, keyboard: Optional[BotKeyboard] = None) -> BotMessage:
+        return BotMessage(text=text, keyboard=keyboard, disable_web_preview=True)
 
 
 @dataclass
@@ -83,86 +83,93 @@ class OnboardingFlow:
     def __init__(self, pipeline: PipelineBase) -> None:
         self.pipeline = pipeline
 
-    async def handle(self, command, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle(self, command) -> BotMessage:
         chat_id = command.chat_id
         telegram_user_id = command.telegram_user_id
         logger.info("Onboarding start chat_id=%s user_id=%s", chat_id, telegram_user_id)
         if not telegram_user_id:
-            await self.pipeline._reply(chat_id, INVALID_TOKEN_MESSAGE, context)
-            return
+            return self.pipeline._make_message(INVALID_TOKEN_MESSAGE)
 
         sheets = self.pipeline._get_sheets()
         invite = sheets.find_invite(command.invite_token)
         if not invite or str(invite.get("status")) != "unused":
             logger.warning("Onboarding invalid token chat_id=%s user_id=%s", chat_id, telegram_user_id)
-            await self.pipeline._reply(chat_id, INVALID_TOKEN_MESSAGE, context)
-            return
+            return self.pipeline._make_message(INVALID_TOKEN_MESSAGE)
 
         user_id = f"USR-{int(time.time() * 1000)}-{telegram_user_id}"
         sheets.create_user(user_id, str(telegram_user_id), str(chat_id))
         sheets.mark_invite_used(command.invite_token)
         logger.info("Onboarding success chat_id=%s user_id=%s", chat_id, telegram_user_id)
-        await self.pipeline._reply(chat_id, ONBOARDING_SUCCESS_MESSAGE, context)
+        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        return self.pipeline._make_message(ONBOARDING_SUCCESS_MESSAGE, keyboard)
 
 
 class CommandFlow:
     def __init__(self, pipeline: PipelineBase) -> None:
         self.pipeline = pipeline
 
-    async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int], context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_sheets().list_transactions(user.get("userId"))
-        await self.pipeline._reply(chat_id, format_list_message(txs), context)
+        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_HELP])
+        return self.pipeline._make_message(format_list_message(txs), keyboard)
 
-    async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int], context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_sheets().list_transactions(user.get("userId"))
-        await self.pipeline._reply(chat_id, format_summary_message(txs), context)
+        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_HELP])
+        return self.pipeline._make_message(format_summary_message(txs), keyboard)
 
-    async def handle_undo(self, user: Dict[str, Any], chat_id: Optional[int], context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_undo(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Undo command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_sheets().list_transactions(user.get("userId"))
         picked = BotPipeline._pick_latest(txs)
         if picked.get("ok"):
             self.pipeline._get_sheets().mark_transaction_deleted(str(picked["txId"]))
-        await self.pipeline._reply(chat_id, format_undo_message(picked), context)
+        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        return self.pipeline._make_message(format_undo_message(picked), keyboard)
 
 
 class AiFlow:
     def __init__(self, pipeline: PipelineBase) -> None:
         self.pipeline = pipeline
 
-    async def handle(self, command, user: Dict[str, Any], chat_id: Optional[int], update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle(
+        self,
+        command,
+        user: Dict[str, Any],
+        chat_id: Optional[int],
+        message_id: Optional[str],
+        source: str,
+    ) -> BotMessage:
         logger.info("AI parse start chat_id=%s user_id=%s", chat_id, user.get("userId"))
         system_prompt = build_system_prompt(self.pipeline.settings)
         user_message = command.text_for_parsing or command.text
         content = await self.pipeline._get_groq().chat_completion(system_prompt, user_message)
         parsed = extract_json(content)
 
-        tx = normalize_ai_response(parsed, command.text, chat_id, self.pipeline.settings)
+        tx = normalize_ai_response(parsed, command.text, chat_id, self.pipeline.settings, source)
         tx = normalize_types(tx)
         tx["chatId"] = chat_id
-        tx["sourceMessageId"] = str(update.effective_message.message_id) if update.effective_message else ""
+        tx["sourceMessageId"] = str(message_id or "")
 
         intent = str(tx.get("intent", "add_tx")).lower()
         if intent == "help":
-            await self.pipeline._reply(chat_id, HELP_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            return self.pipeline._make_message(HELP_MESSAGE, keyboard)
         if intent == "list":
-            await self.pipeline.command_flow.handle_list(user, chat_id, context)
-            return
+            return await self.pipeline.command_flow.handle_list(user, chat_id)
         if intent == "summary":
-            await self.pipeline.command_flow.handle_summary(user, chat_id, context)
-            return
+            return await self.pipeline.command_flow.handle_summary(user, chat_id)
 
         if intent != "add_tx":
-            await self.pipeline._reply(chat_id, HELP_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            return self.pipeline._make_message(HELP_MESSAGE, keyboard)
 
         if float(tx.get("amount", 0)) <= 0 or not str(tx.get("category")):
             logger.warning("AI invalid tx chat_id=%s user_id=%s", chat_id, user.get("userId"))
-            await self.pipeline._reply(chat_id, INVALID_TX_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_HELP])
+            return self.pipeline._make_message(INVALID_TX_MESSAGE, keyboard)
 
         tx_id = generate_tx_id()
         tx["txId"] = tx_id
@@ -178,7 +185,7 @@ class AiFlow:
         tx["loanId"] = tx.get("loanId") or ""
         tx["parseConfidence"] = tx.get("parseConfidence") or 0.7
         tx["parserVersion"] = tx.get("parserVersion") or "mvp-v1"
-        tx["source"] = tx.get("source") or "telegram"
+        tx["source"] = tx.get("source") or source
         tx["sourceMessageId"] = tx.get("sourceMessageId") or ""
         tx["createdAt"] = tx.get("createdAt") or __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
         tx["updatedAt"] = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
@@ -187,7 +194,8 @@ class AiFlow:
 
         self.pipeline._get_sheets().append_transaction(tx)
         logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx_id)
-        await self.pipeline._reply(chat_id, format_add_tx_message(tx), context)
+        keyboard = _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
+        return self.pipeline._make_message(format_add_tx_message(tx), keyboard)
 
 
 class BotPipeline(PipelineBase):
@@ -198,33 +206,25 @@ class BotPipeline(PipelineBase):
         self.command_flow = CommandFlow(self)
         self.ai_flow = AiFlow(self)
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        message = update.effective_message
-        chat_id = message.chat_id if message else None
-        telegram_user_id = message.from_user.id if message and message.from_user else None
-        text = message.text if message else None
+    async def handle_message(self, request: BotInput) -> list[BotMessage]:
+        chat_id = request.chat_id
+        telegram_user_id = request.user_id
+        text = request.text
         logger.info(
             "Incoming message route=pending chat_id=%s user_id=%s has_text=%s has_voice=%s",
             chat_id,
             telegram_user_id,
             bool(text),
-            bool(message and message.voice),
+            bool(request.audio_bytes),
         )
 
-        if message and message.voice:
-            audio_text = await self._transcribe_voice(message.voice.file_id, context)
+        if request.audio_bytes:
+            audio_text = await self._transcribe_audio(request.audio_bytes)
             text = audio_text or text
 
-        non_text_type = None
+        non_text_type = request.non_text_type
         if not text:
-            if message and message.voice:
-                non_text_type = "voice"
-            elif message and message.photo:
-                non_text_type = "photo"
-            elif message and message.sticker:
-                non_text_type = "sticker"
-            else:
-                non_text_type = "non_text"
+            non_text_type = non_text_type or "non_text"
 
         command = parse_command(text, chat_id, telegram_user_id, non_text_type)
 
@@ -235,16 +235,15 @@ class BotPipeline(PipelineBase):
             telegram_user_id,
         )
         if command.route == "onboarding":
-            await self.onboarding_flow.handle(command, context)
-            return
+            return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            await self._reply(chat_id, HELP_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route == "non_text":
-            await self._reply(chat_id, NON_TEXT_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_HELP])
+            return [self._make_message(NON_TEXT_MESSAGE, keyboard)]
 
         auth_result = self.auth_flow.require_active_user(telegram_user_id)
         if not auth_result.user:
@@ -253,32 +252,31 @@ class BotPipeline(PipelineBase):
                 chat_id,
                 telegram_user_id,
             )
-            await self._reply(chat_id, auth_result.error_message or UNAUTHORIZED_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_HELP])
+            return [self._make_message(auth_result.error_message or UNAUTHORIZED_MESSAGE, keyboard)]
 
         self._get_sheets().update_user_last_seen(str(telegram_user_id))
 
         if command.route == "list":
-            await self.command_flow.handle_list(auth_result.user, chat_id, context)
-            return
+            return [await self.command_flow.handle_list(auth_result.user, chat_id)]
         if command.route == "summary":
-            await self.command_flow.handle_summary(auth_result.user, chat_id, context)
-            return
+            return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
         if command.route == "undo":
-            await self.command_flow.handle_undo(auth_result.user, chat_id, context)
-            return
+            return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
 
-        await self.ai_flow.handle(command, auth_result.user, chat_id, update, context)
+        response = await self.ai_flow.handle(
+            command,
+            auth_result.user,
+            chat_id,
+            request.message_id,
+            request.channel,
+        )
+        return [response]
 
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        callback = update.callback_query
-        if not callback:
-            return
-        await callback.answer()
-        message = callback.message
-        chat_id = message.chat_id if message else None
-        telegram_user_id = callback.from_user.id if callback.from_user else None
-        text = callback.data
+    async def handle_callback(self, request: BotInput) -> list[BotMessage]:
+        chat_id = request.chat_id
+        telegram_user_id = request.user_id
+        text = request.text
         logger.info(
             "Incoming callback chat_id=%s user_id=%s has_data=%s",
             chat_id,
@@ -288,12 +286,11 @@ class BotPipeline(PipelineBase):
         command = parse_command(text, chat_id, telegram_user_id, None)
 
         if command.route == "onboarding":
-            await self.onboarding_flow.handle(command, context)
-            return
+            return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            await self._reply(chat_id, HELP_MESSAGE, context)
-            return
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route in {"list", "summary", "undo", "ai"}:
             auth_result = self.auth_flow.require_active_user(telegram_user_id)
@@ -303,22 +300,28 @@ class BotPipeline(PipelineBase):
                     chat_id,
                     telegram_user_id,
                 )
-                await self._reply(chat_id, auth_result.error_message or UNAUTHORIZED_MESSAGE, context)
-                return
+                keyboard = _kb([ACTION_HELP])
+                return [self._make_message(auth_result.error_message or UNAUTHORIZED_MESSAGE, keyboard)]
             self._get_sheets().update_user_last_seen(str(telegram_user_id))
             if command.route == "list":
-                await self.command_flow.handle_list(auth_result.user, chat_id, context)
+                return [await self.command_flow.handle_list(auth_result.user, chat_id)]
             elif command.route == "summary":
-                await self.command_flow.handle_summary(auth_result.user, chat_id, context)
+                return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
             elif command.route == "undo":
-                await self.command_flow.handle_undo(auth_result.user, chat_id, context)
+                return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
             else:
-                await self.ai_flow.handle(command, auth_result.user, chat_id, update, context)
+                response = await self.ai_flow.handle(
+                    command,
+                    auth_result.user,
+                    chat_id,
+                    request.message_id,
+                    request.channel,
+                )
+                return [response]
+        return []
 
-    async def _transcribe_voice(self, file_id: str, context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+    async def _transcribe_audio(self, audio_bytes: bytes) -> Optional[str]:
         try:
-            file = await context.bot.get_file(file_id)
-            audio_bytes = await file.download_as_bytearray()
             response = await self._get_groq().transcribe(bytes(audio_bytes))
         except Exception as exc:
             logger.warning("Voice transcription failed: %s", exc)

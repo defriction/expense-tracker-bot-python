@@ -6,6 +6,8 @@ from typing import Optional
 from telegram.ext import CallbackQueryHandler, MessageHandler, filters
 
 from app.bot.pipeline import BotPipeline
+from app.bot.ui_models import BotInput
+from app.channels.telegram_adapter import download_voice_bytes, send_bot_message
 from app.core.config import Settings, load_settings
 from app.core.logging import logger, setup_logging, set_trace_id
 from app.services.groq import GroqClient
@@ -89,7 +91,38 @@ async def _handle_message_safe(update, context) -> None:
     _set_trace_from_update(update)
     pipeline = _get_pipeline()
     try:
-        await pipeline.handle_message(update, context)
+        message = update.effective_message
+        chat_id = message.chat_id if message else None
+        telegram_user_id = message.from_user.id if message and message.from_user else None
+        text = message.text if message else None
+        message_id = str(message.message_id) if message else None
+        audio_bytes = None
+        non_text_type = None
+
+        if message and message.voice:
+            try:
+                audio_bytes = await download_voice_bytes(context, message.voice.file_id)
+            except Exception as exc:
+                logger.warning("Failed to download voice file: %s", exc)
+                non_text_type = "voice"
+        elif message and message.photo:
+            non_text_type = "photo"
+        elif message and message.sticker:
+            non_text_type = "sticker"
+
+        request = BotInput(
+            channel="telegram",
+            chat_id=chat_id,
+            user_id=telegram_user_id,
+            text=text,
+            message_id=message_id,
+            audio_bytes=audio_bytes,
+            non_text_type=non_text_type,
+        )
+
+        responses = await pipeline.handle_message(request)
+        for response in responses:
+            await send_bot_message(context, chat_id, response)
     except Exception as exc:
         await _notify_error(update, context, exc)
 
@@ -98,7 +131,28 @@ async def _handle_callback_safe(update, context) -> None:
     _set_trace_from_update(update)
     pipeline = _get_pipeline()
     try:
-        await pipeline.handle_callback(update, context)
+        callback = update.callback_query
+        if not callback:
+            return
+        await callback.answer()
+        message = callback.message
+        chat_id = message.chat_id if message else None
+        telegram_user_id = callback.from_user.id if callback.from_user else None
+        message_id = str(message.message_id) if message else None
+        text = callback.data
+
+        request = BotInput(
+            channel="telegram",
+            chat_id=chat_id,
+            user_id=telegram_user_id,
+            text=text,
+            message_id=message_id,
+            audio_bytes=None,
+            non_text_type=None,
+        )
+        responses = await pipeline.handle_callback(request)
+        for response in responses:
+            await send_bot_message(context, chat_id, response)
     except Exception as exc:
         await _notify_error(update, context, exc)
 
