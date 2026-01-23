@@ -149,11 +149,17 @@ def normalize_ai_response(parsed: Dict[str, Any], raw_text: str, chat_id: Option
     mentions_anoche = "anoche" in raw_text.lower()
     explicit_calendar_date = _explicit_calendar_date(raw_text)
 
+    def _safe_float(value: Any, default: float = 0) -> float:
+        try:
+            return float(str(value).replace(",", "."))
+        except ValueError:
+            return default
+
     tx = {
         "intent": _norm_str(parsed.get("intent", "add_tx")).lower(),
         "type": _norm_str(parsed.get("type", "expense")).lower(),
         "transactionKind": _norm_str(parsed.get("transactionKind", "regular")).lower(),
-        "amount": float(parsed.get("amount", 0) or 0),
+        "amount": _safe_float(parsed.get("amount", 0), 0),
         "currency": _norm_str(parsed.get("currency", "COP")).upper(),
         "category": _norm_str(parsed.get("category", "misc")).lower(),
         "description": _norm_str(parsed.get("description", "")),

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict
 
@@ -107,4 +108,11 @@ class GroqClient:
 
 def extract_json(content: str) -> Dict[str, Any]:
     clean = content.replace("```json", "").replace("```", "").strip()
-    return json.loads(clean)
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(clean[start : end + 1])
+        raise
