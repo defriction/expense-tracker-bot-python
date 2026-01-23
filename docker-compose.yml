@@ -19,6 +19,7 @@ services:
       - traefik.http.services.expense-bot.loadbalancer.server.port=8000
       - traefik.http.middlewares.expense-strip.stripprefix.prefixes=/expense/v1
       - traefik.http.routers.expense-bot.middlewares=expense-strip@docker
+      - traefik.docker.network=proxy
 
 networks:
   proxy:
