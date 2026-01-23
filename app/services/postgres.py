@@ -89,7 +89,7 @@ class PostgresRepo:
                 text(
                     """
                     insert into audit_events (entity_type, entity_id, action, payload, created_at)
-                    values ('user', :user_id, 'create', :payload::jsonb, :now)
+                    values ('user', :user_id, 'create', cast(:payload as jsonb), :now)
                     """
                 ),
                 {"user_id": user_id, "payload": "{}", "now": now},
@@ -125,7 +125,7 @@ class PostgresRepo:
                 text(
                     """
                     insert into audit_events (entity_type, entity_id, action, payload, created_at, actor_user_id)
-                    values ('invite', :token, 'use', :payload::jsonb, :now, :user_id)
+                    values ('invite', :token, 'use', cast(:payload as jsonb), :now, :user_id)
                     """
                 ),
                 {"token": invite_token, "payload": "{}", "now": now, "user_id": used_by_user_id},
@@ -186,7 +186,7 @@ class PostgresRepo:
                 text(
                     """
                     insert into audit_events (entity_type, entity_id, action, payload, created_at, actor_user_id, source)
-                    values ('transaction', :tx_id, 'create', :payload::jsonb, :now, :user_id, :source)
+                    values ('transaction', :tx_id, 'create', cast(:payload as jsonb), :now, :user_id, :source)
                     """
                 ),
                 {
@@ -262,7 +262,7 @@ class PostgresRepo:
                 text(
                     """
                     insert into audit_events (entity_type, entity_id, action, payload, created_at)
-                    values ('transaction', :tx_id, 'delete', :payload::jsonb, :now)
+                    values ('transaction', :tx_id, 'delete', cast(:payload as jsonb), :now)
                     """
                 ),
                 {"tx_id": tx_id, "payload": "{}", "now": now},
