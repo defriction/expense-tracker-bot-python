@@ -9,6 +9,7 @@ services:
       - ./credentials:/credentials:ro
     networks:
       - proxy
+      - internal
     labels:
       - traefik.enable=true
       - traefik.http.routers.expense-bot.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`/expense/v1`)
@@ -21,4 +22,6 @@ services:
 
 networks:
   proxy:
+    external: true
+  internal:
     external: true
