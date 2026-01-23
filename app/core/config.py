@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
-    groq_api_key: str
+    groq_api_key: Optional[str]
     google_sheets_id: str
     google_service_account_json: Optional[str]
     google_service_account_file: Optional[str]
@@ -30,16 +30,12 @@ def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
 
 def load_settings() -> Settings:
     bot_token = _get_env("BOT_TOKEN")
-    groq_api_key = _get_env("GROQ_API_KEY")
-
     if not bot_token:
         raise RuntimeError("BOT_TOKEN is required")
-    if not groq_api_key:
-        raise RuntimeError("GROQ_API_KEY is required")
 
     return Settings(
         bot_token=bot_token,
-        groq_api_key=groq_api_key,
+        groq_api_key=_get_env("GROQ_API_KEY"),
         google_sheets_id=_get_env("GOOGLE_SHEETS_ID", DEFAULT_SHEETS_ID) or DEFAULT_SHEETS_ID,
         google_service_account_json=_get_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
         google_service_account_file=_get_env("GOOGLE_SERVICE_ACCOUNT_FILE"),

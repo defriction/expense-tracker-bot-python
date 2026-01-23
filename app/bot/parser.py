@@ -275,7 +275,7 @@ def normalize_types(tx: Dict[str, Any]) -> Dict[str, Any]:
     return tx
 
 
-def build_prompt(text_for_parsing: str, settings: Settings) -> str:
+def build_system_prompt(settings: Settings) -> str:
     today = datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d")
     return (
         "You are a financial assistant. Extract structured data from a single user message.\n\n"
@@ -333,7 +333,6 @@ def build_prompt(text_for_parsing: str, settings: Settings) -> str:
         "counterparty, loanRole, loanId,\n"
         "isRecurring, recurrence, recurrenceId,\n"
         "parseConfidence\n\n"
-        f"Message: {text_for_parsing}\n"
         f"Current Date (America/Bogota): {today}"
     )
 

@@ -1,38 +1,124 @@
-﻿from telegram.ext import CallbackQueryHandler, MessageHandler, filters
+﻿from __future__ import annotations
 
-from app.core.config import load_settings
+from dataclasses import dataclass
+from typing import Optional
+
+from telegram.ext import CallbackQueryHandler, MessageHandler, filters
+
 from app.bot.pipeline import BotPipeline
-from app.services.sheets import SheetsRepo
-
-_settings = load_settings()
-_sheets = SheetsRepo(_settings)
-_pipeline = BotPipeline(_settings, _sheets)
+from app.core.config import Settings, load_settings
+from app.core.logging import logger, setup_logging, set_trace_id
+from app.services.groq import GroqClient
+from app.services.sheets import build_sheets_repo
 
 ERROR_WORKFLOW_NAME = "Finance Bot v2"
+USER_ERROR_MESSAGE = "⚠️ <b>Ocurrió un error</b>\nPor favor inténtalo más tarde."
+
+_settings: Optional[Settings] = None
+_pipeline: Optional[BotPipeline] = None
+
+
+@dataclass
+class ErrorNotifier:
+    settings: Settings
+
+    async def notify(self, update, context, message: str) -> None:
+        if update and update.effective_chat:
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=USER_ERROR_MESSAGE,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                pass
+
+        if self.settings.admin_telegram_chat_id:
+            text = (
+                "🚨 <b>Error en el bot</b>\n\n"
+                f"<b>Workflow:</b> <code>{ERROR_WORKFLOW_NAME}</code>\n"
+                "<b>Nodo:</b> <code>handler</code>\n\n"
+                "<b>Detalle:</b>\n"
+                f"<pre>{message}</pre>"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=self.settings.admin_telegram_chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                pass
+
+
+class PipelineFactory:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def build(self) -> BotPipeline:
+        return BotPipeline(self.settings, build_sheets_repo(self.settings), GroqClient(self.settings))
+
+
+def _get_pipeline() -> BotPipeline:
+    global _settings, _pipeline
+    if _pipeline is not None:
+        return _pipeline
+    _settings = load_settings()
+    setup_logging()
+    _pipeline = PipelineFactory(_settings).build()
+    return _pipeline
+
+
+def _set_trace_from_update(update) -> None:
+    trace = None
+    if update is not None and hasattr(update, "update_id"):
+        trace = f"tg-{update.update_id}"
+    set_trace_id(trace)
 
 
 def get_handlers():
     return [
-        MessageHandler(filters.ALL, _pipeline.handle_message),
-        CallbackQueryHandler(_pipeline.handle_callback),
+        MessageHandler(filters.ALL, _handle_message_safe),
+        CallbackQueryHandler(_handle_callback_safe),
     ]
 
 
+async def _handle_message_safe(update, context) -> None:
+    _set_trace_from_update(update)
+    pipeline = _get_pipeline()
+    try:
+        await pipeline.handle_message(update, context)
+    except Exception as exc:
+        await _notify_error(update, context, exc)
+
+
+async def _handle_callback_safe(update, context) -> None:
+    _set_trace_from_update(update)
+    pipeline = _get_pipeline()
+    try:
+        await pipeline.handle_callback(update, context)
+    except Exception as exc:
+        await _notify_error(update, context, exc)
+
+
+async def _notify_error(update, context, exc: Exception) -> None:
+    message = str(exc) or "Unknown error"
+    chat_id = update.effective_chat.id if update and update.effective_chat else None
+    user_id = update.effective_user.id if update and update.effective_user else None
+    logger.exception("Unhandled error chat_id=%s user_id=%s error=%s", chat_id, user_id, message)
+    try:
+        pipeline = _get_pipeline()
+        pipeline._get_sheets().append_error_log(ERROR_WORKFLOW_NAME, "handler", message)
+    except Exception:
+        logger.warning("Failed to write error log to Sheets")
+
+    if _settings:
+        await ErrorNotifier(_settings).notify(update, context, message)
+
+
 async def error_handler(update, context) -> None:
+    _set_trace_from_update(update)
     message = str(context.error) if context.error else "Unknown error"
-    _sheets.append_error_log(ERROR_WORKFLOW_NAME, "handler", message)
-    if not _settings.admin_telegram_chat_id:
-        return
-    text = (
-        "🚨 <b>Error en el bot</b>\n\n"
-        f"<b>Workflow:</b> <code>{ERROR_WORKFLOW_NAME}</code>\n"
-        "<b>Nodo:</b> <code>handler</code>\n\n"
-        "<b>Detalle:</b>\n"
-        f"<pre>{message}</pre>"
-    )
-    await context.bot.send_message(
-        chat_id=_settings.admin_telegram_chat_id,
-        text=text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    await _notify_error(update, context, Exception(message))

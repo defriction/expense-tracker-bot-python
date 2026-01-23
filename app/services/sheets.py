@@ -2,12 +2,15 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 from app.core.config import Settings, load_service_account_info
+from app.core.circuit_breaker import CircuitBreaker, guarded_call
+from app.core.retry import sync_retry
+from app.core.logging import logger
 
 
 @dataclass
@@ -162,3 +165,59 @@ class SheetsRepo:
                 continue
             col = headers.index(header) + 1
             ws.update_cell(row_number, col, value)
+
+
+class ResilientSheetsRepo:
+    def __init__(self, settings: Settings, retries: int = 2, backoff_seconds: float = 0.5) -> None:
+        self._settings = settings
+        self._repo = SheetsRepo(settings)
+        self._breaker = CircuitBreaker(on_state_change=self._on_breaker_change)
+        self._retries = retries
+        self._backoff = backoff_seconds
+
+    def _on_breaker_change(self, old: str, new: str) -> None:
+        logger.warning("Sheets circuit breaker transition %s -> %s", old, new)
+
+    def _call(self, fn: Callable[[], Any], label: str):
+        def wrapped():
+            return guarded_call(self._breaker, fn)
+
+        return sync_retry(
+            wrapped,
+            retries=self._retries,
+            backoff_seconds=self._backoff,
+            on_retry=lambda attempt, exc: logger.warning(
+                "Sheets retry %s (attempt %s/%s): %s", label, attempt, self._retries + 1, exc
+            ),
+        )
+
+    def find_user_by_telegram_id(self, telegram_user_id: str) -> Optional[Dict[str, Any]]:
+        return self._call(lambda: self._repo.find_user_by_telegram_id(telegram_user_id), "find_user_by_telegram_id")
+
+    def update_user_last_seen(self, telegram_user_id: str, timestamp: Optional[str] = None) -> None:
+        self._call(lambda: self._repo.update_user_last_seen(telegram_user_id, timestamp), "update_user_last_seen")
+
+    def create_user(self, user_id: str, telegram_user_id: str, chat_id: str) -> None:
+        self._call(lambda: self._repo.create_user(user_id, telegram_user_id, chat_id), "create_user")
+
+    def find_invite(self, invite_token: str) -> Optional[Dict[str, Any]]:
+        return self._call(lambda: self._repo.find_invite(invite_token), "find_invite")
+
+    def mark_invite_used(self, invite_token: str) -> None:
+        self._call(lambda: self._repo.mark_invite_used(invite_token), "mark_invite_used")
+
+    def append_transaction(self, tx: Dict[str, Any]) -> None:
+        self._call(lambda: self._repo.append_transaction(tx), "append_transaction")
+
+    def list_transactions(self, user_id: str, include_deleted: bool = False) -> List[Dict[str, Any]]:
+        return self._call(lambda: self._repo.list_transactions(user_id, include_deleted), "list_transactions")
+
+    def mark_transaction_deleted(self, tx_id: str) -> None:
+        self._call(lambda: self._repo.mark_transaction_deleted(tx_id), "mark_transaction_deleted")
+
+    def append_error_log(self, workflow: str, node: str, message: str) -> None:
+        self._call(lambda: self._repo.append_error_log(workflow, node, message), "append_error_log")
+
+
+def build_sheets_repo(settings: Settings) -> ResilientSheetsRepo:
+    return ResilientSheetsRepo(settings)
