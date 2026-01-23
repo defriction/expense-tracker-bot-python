@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .pytest_cache/
 n8n
+ROADMAP.md
