@@ -7,7 +7,7 @@ services:
       - .env
     labels:
       - traefik.enable=true
-      - traefik.http.routers.expense-tracker-bot.rule=Host(`bot.srv1153123.hstgr.cloud`)
+      - traefik.http.routers.expense-tracker-bot.rule=Host(`bot.srv1153123.hstgr.cloud`) && PathPrefix(`/expense/v1`)
       - traefik.http.routers.expense-tracker-bot.entrypoints=websecure
       - traefik.http.routers.expense-tracker-bot.tls=true
       - traefik.http.routers.expense-tracker-bot.tls.certresolver=mytlschallenge
