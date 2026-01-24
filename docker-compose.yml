@@ -5,8 +5,11 @@ services:
     restart: always
     env_file:
       - .env
+    volumes:
+      - ./credentials:/credentials:ro
     networks:
       - proxy
+      - internal
     labels:
       - traefik.enable=true
       - traefik.http.routers.expense-bot.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`/expense/v1`)
@@ -16,7 +19,10 @@ services:
       - traefik.http.services.expense-bot.loadbalancer.server.port=8000
       - traefik.http.middlewares.expense-strip.stripprefix.prefixes=/expense/v1
       - traefik.http.routers.expense-bot.middlewares=expense-strip@docker
+      - traefik.docker.network=proxy
 
 networks:
   proxy:
+    external: true
+  internal:
     external: true
