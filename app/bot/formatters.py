@@ -35,6 +35,16 @@ NON_TEXT_MESSAGE = (
     "Envíame un mensaje con texto (ej: <code>comí un pan 5k</code>)."
 )
 
+RATE_LIMIT_MESSAGE = (
+    "⏳ <b>Demasiadas solicitudes</b>\n"
+    "Espera un momento y vuelve a intentar."
+)
+
+LONG_MESSAGE = (
+    "✂️ <b>Mensaje muy largo</b>\n"
+    "Reduce el texto e intenta de nuevo."
+)
+
 UNAUTHORIZED_MESSAGE = (
     "🔒 <b>Acceso no autorizado</b>\n"
     "Tu usuario no está activo.\n\n"
@@ -67,23 +77,23 @@ def format_add_tx_message(tx: Dict[str, object]) -> str:
     lines = [
         header,
         kind_label,
-        f"<b>Monto:</b> {amount} {tx.get('currency', 'COP')}",
-        f"<b>Categoría:</b> {tx.get('category', 'misc')}",
-        f"<b>Fecha:</b> <code>{tx.get('date', '')}</code>",
+        f"<b>Monto:</b> {amount}",
+        f"<b>Categoría:</b> {escape_html(str(tx.get('category', 'misc')))}",
+        f"<b>Fecha:</b> <code>{escape_html(str(tx.get('date', '')))}</code>",
     ]
 
     if tx.get("normalizedMerchant"):
-        lines.append(f"<b>Comercio:</b> {tx.get('normalizedMerchant')}")
+        lines.append(f"<b>Comercio:</b> {escape_html(str(tx.get('normalizedMerchant')))}")
     if tx.get("paymentMethod") and tx.get("paymentMethod") != "unknown":
-        lines.append(f"<b>Método:</b> {tx.get('paymentMethod')}")
+        lines.append(f"<b>Método:</b> {escape_html(str(tx.get('paymentMethod')))}")
     if tx.get("description"):
-        lines.append(f"<b>Detalle:</b> <i>{tx.get('description')}</i>")
+        lines.append(f"<b>Detalle:</b> <i>{escape_html(str(tx.get('description')))}</i>")
 
     if kind == "loan":
         if tx.get("counterparty"):
-            lines.append(f"<b>Con:</b> {tx.get('counterparty')}")
+            lines.append(f"<b>Con:</b> {escape_html(str(tx.get('counterparty')))}")
         if tx.get("loanRole"):
-            lines.append(f"<b>Tipo préstamo:</b> {tx.get('loanRole')}")
+            lines.append(f"<b>Tipo préstamo:</b> {escape_html(str(tx.get('loanRole')))}")
 
     if tx.get("isRecurring"):
         lines.append(f"🔁 <b>Recurrente:</b> {tx.get('recurrence') or 'monthly'}")
@@ -418,13 +428,13 @@ def format_undo_message(result: Dict[str, object]) -> str:
     amount = format_currency(float(result.get("amount", 0)), str(result.get("currency", "COP")))
     lines = [
         "↩️ <b>Último movimiento deshecho</b>",
-        f"<b>Monto:</b> {amount} {result.get('currency', 'COP')}",
-        f"<b>Categoría:</b> {result.get('category', 'misc')}",
+        f"<b>Monto:</b> {amount}",
+        f"<b>Categoría:</b> {escape_html(str(result.get('category', 'misc')))}",
     ]
 
     if result.get("date"):
-        lines.append(f"<b>Fecha:</b> <code>{result.get('date')}</code>")
+        lines.append(f"<b>Fecha:</b> <code>{escape_html(str(result.get('date')))}</code>")
     if result.get("description"):
-        lines.append(f"<b>Detalle:</b> <i>{result.get('description')}</i>")
+        lines.append(f"<b>Detalle:</b> <i>{escape_html(str(result.get('description')))}</i>")
 
     return "\n".join(lines)

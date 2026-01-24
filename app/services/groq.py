@@ -43,6 +43,7 @@ class GroqClient:
                     {"role": "user", "content": user_message},
                 ],
                 "temperature": 0,
+                "max_tokens": self.settings.max_output_tokens,
             }
             async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.post(GROQ_CHAT_URL, headers=headers, json=payload)

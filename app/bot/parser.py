@@ -24,6 +24,26 @@ class ParsedCommand:
     channel: str
     non_text_type: Optional[str]
 
+ALLOWED_AI_FIELDS = {
+    "intent",
+    "type",
+    "transactionKind",
+    "amount",
+    "currency",
+    "category",
+    "description",
+    "date",
+    "normalizedMerchant",
+    "paymentMethod",
+    "counterparty",
+    "loanRole",
+    "loanId",
+    "isRecurring",
+    "recurrence",
+    "recurrenceId",
+    "parseConfidence",
+}
+
 
 def normalize_amount_slang(text: str) -> str:
     t = str(text or "")
@@ -98,13 +118,13 @@ def parse_command(
     )
 
 
-def _bogota_today() -> str:
-    now = datetime.now(ZoneInfo("America/Bogota"))
+def _tz_today(tz_name: str) -> str:
+    now = datetime.now(ZoneInfo(tz_name))
     return now.strftime("%Y-%m-%d")
 
 
-def _bogota_yesterday() -> str:
-    now = datetime.now(ZoneInfo("America/Bogota")) - timedelta(days=1)
+def _tz_yesterday(tz_name: str) -> str:
+    now = datetime.now(ZoneInfo(tz_name)) - timedelta(days=1)
     return now.strftime("%Y-%m-%d")
 
 
@@ -136,8 +156,8 @@ def _is_valid_iso_date(value: str) -> bool:
     return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", value))
 
 
-def _current_year_bogota() -> int:
-    return int(datetime.now(ZoneInfo("America/Bogota")).strftime("%Y"))
+def _current_year_tz(tz_name: str) -> int:
+    return int(datetime.now(ZoneInfo(tz_name)).strftime("%Y"))
 
 
 def _stable_id(prefix: str, value: str) -> str:
@@ -150,6 +170,22 @@ def _norm_str(value: Any) -> str:
     return str(value or "").strip()
 
 
+def sanitize_ai_payload(parsed: Any) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {}
+
+    def _cap(value: Any, limit: int = 200) -> Any:
+        if isinstance(value, str) and len(value) > limit:
+            return value[:limit]
+        return value
+
+    sanitized: Dict[str, Any] = {}
+    for key in ALLOWED_AI_FIELDS:
+        if key in parsed:
+            sanitized[key] = _cap(parsed[key])
+    return sanitized
+
+
 def normalize_ai_response(
     parsed: Dict[str, Any],
     raw_text: str,
@@ -157,10 +193,11 @@ def normalize_ai_response(
     settings: Settings,
     source: str,
 ) -> Dict[str, Any]:
-    today = _bogota_today()
-    yesterday = _bogota_yesterday()
+    tz_name = settings.timezone or "America/Bogota"
+    today = _tz_today(tz_name)
+    yesterday = _tz_yesterday(tz_name)
     has_user_date = _user_provided_date(raw_text)
-    current_year = _current_year_bogota()
+    current_year = _current_year_tz(tz_name)
     mentions_anoche = "anoche" in raw_text.lower()
     explicit_calendar_date = _explicit_calendar_date(raw_text)
 

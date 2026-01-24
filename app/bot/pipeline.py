@@ -6,8 +6,10 @@ from typing import Any, Dict, Optional
 
 from app.bot.formatters import (
     HELP_MESSAGE,
+    LONG_MESSAGE,
     NON_TEXT_MESSAGE,
     ONBOARDING_SUCCESS_MESSAGE,
+    RATE_LIMIT_MESSAGE,
     UNAUTHORIZED_MESSAGE,
     format_add_tx_message,
     format_list_message,
@@ -20,10 +22,12 @@ from app.bot.parser import (
     normalize_ai_response,
     normalize_types,
     parse_command,
+    sanitize_ai_payload,
 )
 from app.bot.ui_models import BotAction, BotInput, BotKeyboard, BotMessage
 from app.core.config import Settings
 from app.core.logging import logger
+from app.core.rate_limit import rate_limiter
 from app.services.groq import GroqClient, extract_json
 from app.services.repositories import DataRepo
 
@@ -144,9 +148,15 @@ class AiFlow:
     ) -> BotMessage:
         logger.info("AI parse start chat_id=%s user_id=%s", chat_id, user.get("userId"))
         system_prompt = build_system_prompt(self.pipeline.settings)
-        user_message = command.text_for_parsing or command.text
+        user_message = (command.text_for_parsing or command.text or "").strip()
         content = await self.pipeline._get_groq().chat_completion(system_prompt, user_message)
-        parsed = extract_json(content)
+        try:
+            parsed = extract_json(content)
+        except Exception as exc:
+            logger.warning("AI response invalid JSON chat_id=%s user_id=%s error=%s", chat_id, user.get("userId"), exc)
+            keyboard = _kb([ACTION_HELP])
+            return self.pipeline._make_message(HELP_MESSAGE, keyboard)
+        parsed = sanitize_ai_payload(parsed)
 
         tx = normalize_ai_response(parsed, command.text, chat_id, self.pipeline.settings, source)
         tx = normalize_types(tx)
@@ -210,6 +220,7 @@ class BotPipeline(PipelineBase):
         chat_id = request.chat_id
         external_user_id = request.user_id
         text = request.text
+        settings = self.settings
         logger.info(
             "Incoming message route=pending chat_id=%s user_id=%s has_text=%s has_voice=%s",
             chat_id,
@@ -235,6 +246,11 @@ class BotPipeline(PipelineBase):
             external_user_id,
         )
         if command.route == "onboarding":
+            if settings.rate_limit_onboarding_per_min > 0:
+                limiter_key = f"onboard:{request.channel}:{external_user_id or chat_id or 'unknown'}"
+                if not rate_limiter.allow(limiter_key, settings.rate_limit_onboarding_per_min, 60):
+                    keyboard = _kb([ACTION_HELP])
+                    return [self._make_message(RATE_LIMIT_MESSAGE, keyboard)]
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
@@ -268,6 +284,9 @@ class BotPipeline(PipelineBase):
         if command.route == "undo":
             return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
 
+        if len(command.text_for_parsing or "") > settings.max_input_chars:
+            keyboard = _kb([ACTION_HELP])
+            return [self._make_message(LONG_MESSAGE, keyboard)]
         response = await self.ai_flow.handle(
             command,
             auth_result.user,
@@ -281,6 +300,7 @@ class BotPipeline(PipelineBase):
         chat_id = request.chat_id
         external_user_id = request.user_id
         text = request.text
+        settings = self.settings
         logger.info(
             "Incoming callback chat_id=%s user_id=%s has_data=%s",
             chat_id,
@@ -290,6 +310,11 @@ class BotPipeline(PipelineBase):
         command = parse_command(text, chat_id, external_user_id, None, request.channel)
 
         if command.route == "onboarding":
+            if settings.rate_limit_onboarding_per_min > 0:
+                limiter_key = f"onboard:{request.channel}:{external_user_id or chat_id or 'unknown'}"
+                if not rate_limiter.allow(limiter_key, settings.rate_limit_onboarding_per_min, 60):
+                    keyboard = _kb([ACTION_HELP])
+                    return [self._make_message(RATE_LIMIT_MESSAGE, keyboard)]
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
@@ -318,6 +343,9 @@ class BotPipeline(PipelineBase):
             elif command.route == "undo":
                 return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
             else:
+                if len(command.text_for_parsing or "") > settings.max_input_chars:
+                    keyboard = _kb([ACTION_HELP])
+                    return [self._make_message(LONG_MESSAGE, keyboard)]
                 response = await self.ai_flow.handle(
                     command,
                     auth_result.user,

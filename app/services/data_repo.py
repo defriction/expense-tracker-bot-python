@@ -15,6 +15,11 @@ def build_data_repo(settings: Settings) -> DataRepo:
 
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     primary = ResilientPostgresRepo(PostgresRepo(engine))
-    sheets = build_sheets_repo(settings)
-    logger.info("Data repo initialized primary=postgres secondary=sheets")
-    return CompositeRepo(primary=primary, secondary_writers=[sheets])
+    secondary_writers = []
+    if settings.google_service_account_json or settings.google_service_account_file:
+        sheets = build_sheets_repo(settings)
+        secondary_writers.append(sheets)
+        logger.info("Data repo initialized primary=postgres secondary=sheets")
+    else:
+        logger.info("Data repo initialized primary=postgres secondary=none")
+    return CompositeRepo(primary=primary, secondary_writers=secondary_writers)

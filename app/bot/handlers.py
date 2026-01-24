@@ -6,10 +6,12 @@ from typing import Optional
 from telegram.ext import CallbackQueryHandler, MessageHandler, filters
 
 from app.bot.pipeline import BotPipeline
+from app.bot.formatters import RATE_LIMIT_MESSAGE
 from app.bot.ui_models import BotInput
 from app.channels.telegram_adapter import download_voice_bytes, send_bot_message
 from app.core.config import Settings, load_settings
 from app.core.logging import logger, setup_logging, set_trace_id
+from app.core.rate_limit import rate_limiter
 from app.services.groq import GroqClient
 from app.services.data_repo import build_data_repo
 
@@ -90,11 +92,14 @@ def get_handlers():
 async def _handle_message_safe(update, context) -> None:
     _set_trace_from_update(update)
     pipeline = _get_pipeline()
+    settings = pipeline.settings
     try:
         message = update.effective_message
         chat_id = message.chat_id if message else None
         telegram_user_id = message.from_user.id if message and message.from_user else None
         text = message.text if message else None
+        if not text and message:
+            text = message.caption
         message_id = str(message.message_id) if message else None
         audio_bytes = None
         non_text_type = None
@@ -120,6 +125,17 @@ async def _handle_message_safe(update, context) -> None:
             non_text_type=non_text_type,
         )
 
+        if settings.rate_limit_per_user_per_min > 0:
+            limiter_key = None
+            if telegram_user_id is not None:
+                limiter_key = f"user:{telegram_user_id}"
+            elif chat_id is not None:
+                limiter_key = f"chat:{chat_id}"
+            if limiter_key and not rate_limiter.allow(limiter_key, settings.rate_limit_per_user_per_min, 60):
+                logger.warning("Rate limit exceeded key=%s", limiter_key)
+                await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
+                return
+
         responses = await pipeline.handle_message(request)
         for response in responses:
             await send_bot_message(context, chat_id, response)
@@ -130,6 +146,7 @@ async def _handle_message_safe(update, context) -> None:
 async def _handle_callback_safe(update, context) -> None:
     _set_trace_from_update(update)
     pipeline = _get_pipeline()
+    settings = pipeline.settings
     try:
         callback = update.callback_query
         if not callback:
@@ -150,6 +167,16 @@ async def _handle_callback_safe(update, context) -> None:
             audio_bytes=None,
             non_text_type=None,
         )
+        if settings.rate_limit_per_user_per_min > 0:
+            limiter_key = None
+            if telegram_user_id is not None:
+                limiter_key = f"user:{telegram_user_id}"
+            elif chat_id is not None:
+                limiter_key = f"chat:{chat_id}"
+            if limiter_key and not rate_limiter.allow(limiter_key, settings.rate_limit_per_user_per_min, 60):
+                logger.warning("Rate limit exceeded key=%s", limiter_key)
+                await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
+                return
         responses = await pipeline.handle_callback(request)
         for response in responses:
             await send_bot_message(context, chat_id, response)

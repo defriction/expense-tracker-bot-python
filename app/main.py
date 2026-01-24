@@ -9,7 +9,7 @@ settings = load_settings()
 app = FastAPI()
 telegram_app = build_telegram_app(settings.bot_token, get_handlers(), error_handler)
 
-app.include_router(build_telegram_router(telegram_app))
+app.include_router(build_telegram_router(telegram_app, settings))
 
 
 @app.on_event("startup")
