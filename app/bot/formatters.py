@@ -265,7 +265,7 @@ def _render_top_list(curr: Dict[str, float], curr_total: float, prev: Dict[str, 
     top = entries[:5]
     rest = entries[5:]
     others = sum(value for _, value in rest)
-    rows = top + (["Otros", others] if others > 0 else [])
+    rows = top + ([("Otros", others)] if others > 0 else [])
 
     max_label = min(18, max([len(str(label)) for label, _ in rows] + [8]))
     header = f"{'Categoría'.ljust(max_label)}  {'Valor'.rjust(14)}  {'%'.rjust(4)}  {'Δ%'.rjust(4)}"
