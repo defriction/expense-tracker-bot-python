@@ -7,10 +7,11 @@ from telegram.ext import CallbackQueryHandler, MessageHandler, filters
 
 from app.bot.pipeline import BotPipeline
 from app.bot.formatters import RATE_LIMIT_MESSAGE
+from app.bot.parser import parse_command
 from app.bot.ui_models import BotInput
 from app.channels.telegram_adapter import download_voice_bytes, send_bot_message
 from app.core.config import Settings, load_settings
-from app.core.logging import logger, setup_logging, set_trace_id
+from app.core.logging import get_client_ip, logger, setup_logging, set_trace_id
 from app.core.rate_limit import rate_limiter
 from app.services.groq import GroqClient
 from app.services.data_repo import build_data_repo
@@ -125,6 +126,15 @@ async def _handle_message_safe(update, context) -> None:
             non_text_type=non_text_type,
         )
 
+        command = parse_command(text, chat_id, telegram_user_id, non_text_type, "telegram")
+        if command.route == "onboarding" and settings.rate_limit_onboarding_per_min > 0:
+            limiter_key = f"onboard:{request.channel}:{telegram_user_id or chat_id or 'unknown'}"
+            if not rate_limiter.allow(limiter_key, settings.rate_limit_onboarding_per_min, 60):
+                logger.warning("Onboarding rate limited key=%s", limiter_key)
+                await _notify_admin_rate_limit(context, settings, "onboarding", telegram_user_id, chat_id)
+                await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
+                return
+
         if settings.rate_limit_per_user_per_min > 0:
             limiter_key = None
             if telegram_user_id is not None:
@@ -133,6 +143,7 @@ async def _handle_message_safe(update, context) -> None:
                 limiter_key = f"chat:{chat_id}"
             if limiter_key and not rate_limiter.allow(limiter_key, settings.rate_limit_per_user_per_min, 60):
                 logger.warning("Rate limit exceeded key=%s", limiter_key)
+                await _notify_admin_rate_limit(context, settings, "user", telegram_user_id, chat_id)
                 await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
                 return
 
@@ -167,6 +178,14 @@ async def _handle_callback_safe(update, context) -> None:
             audio_bytes=None,
             non_text_type=None,
         )
+        command = parse_command(text, chat_id, telegram_user_id, None, "telegram")
+        if command.route == "onboarding" and settings.rate_limit_onboarding_per_min > 0:
+            limiter_key = f"onboard:{request.channel}:{telegram_user_id or chat_id or 'unknown'}"
+            if not rate_limiter.allow(limiter_key, settings.rate_limit_onboarding_per_min, 60):
+                logger.warning("Onboarding rate limited key=%s", limiter_key)
+                await _notify_admin_rate_limit(context, settings, "onboarding", telegram_user_id, chat_id)
+                await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
+                return
         if settings.rate_limit_per_user_per_min > 0:
             limiter_key = None
             if telegram_user_id is not None:
@@ -175,6 +194,7 @@ async def _handle_callback_safe(update, context) -> None:
                 limiter_key = f"chat:{chat_id}"
             if limiter_key and not rate_limiter.allow(limiter_key, settings.rate_limit_per_user_per_min, 60):
                 logger.warning("Rate limit exceeded key=%s", limiter_key)
+                await _notify_admin_rate_limit(context, settings, "user", telegram_user_id, chat_id)
                 await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
                 return
         responses = await pipeline.handle_callback(request)
@@ -197,6 +217,28 @@ async def _notify_error(update, context, exc: Exception) -> None:
 
     if _settings:
         await ErrorNotifier(_settings).notify(update, context, message)
+
+
+async def _notify_admin_rate_limit(context, settings: Settings, reason: str, user_id, chat_id) -> None:
+    if not settings.admin_telegram_chat_id:
+        return
+    ip = get_client_ip()
+    text = (
+        "🚨 <b>Bloqueo por seguridad</b>\n\n"
+        f"<b>Motivo:</b> <code>{reason}</code>\n"
+        f"<b>User:</b> <code>{user_id or '-'}</code>\n"
+        f"<b>Chat:</b> <code>{chat_id or '-'}</code>\n"
+        f"<b>IP:</b> <code>{ip}</code>"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=settings.admin_telegram_chat_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.warning("Failed to notify admin on rate limit")
 
 
 async def error_handler(update, context) -> None:

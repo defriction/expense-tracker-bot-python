@@ -9,7 +9,6 @@ from app.bot.formatters import (
     LONG_MESSAGE,
     NON_TEXT_MESSAGE,
     ONBOARDING_SUCCESS_MESSAGE,
-    RATE_LIMIT_MESSAGE,
     UNAUTHORIZED_MESSAGE,
     format_add_tx_message,
     format_list_message,
@@ -27,7 +26,6 @@ from app.bot.parser import (
 from app.bot.ui_models import BotAction, BotInput, BotKeyboard, BotMessage
 from app.core.config import Settings
 from app.core.logging import logger
-from app.core.rate_limit import rate_limiter
 from app.services.groq import GroqClient, extract_json
 from app.services.repositories import DataRepo
 
@@ -246,11 +244,6 @@ class BotPipeline(PipelineBase):
             external_user_id,
         )
         if command.route == "onboarding":
-            if settings.rate_limit_onboarding_per_min > 0:
-                limiter_key = f"onboard:{request.channel}:{external_user_id or chat_id or 'unknown'}"
-                if not rate_limiter.allow(limiter_key, settings.rate_limit_onboarding_per_min, 60):
-                    keyboard = _kb([ACTION_HELP])
-                    return [self._make_message(RATE_LIMIT_MESSAGE, keyboard)]
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
@@ -310,11 +303,6 @@ class BotPipeline(PipelineBase):
         command = parse_command(text, chat_id, external_user_id, None, request.channel)
 
         if command.route == "onboarding":
-            if settings.rate_limit_onboarding_per_min > 0:
-                limiter_key = f"onboard:{request.channel}:{external_user_id or chat_id or 'unknown'}"
-                if not rate_limiter.allow(limiter_key, settings.rate_limit_onboarding_per_min, 60):
-                    keyboard = _kb([ACTION_HELP])
-                    return [self._make_message(RATE_LIMIT_MESSAGE, keyboard)]
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":

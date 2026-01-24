@@ -36,7 +36,7 @@ NON_TEXT_MESSAGE = (
 )
 
 RATE_LIMIT_MESSAGE = (
-    "⏳ <b>Demasiadas solicitudes</b>\n"
+    "⏳ <b>Muchos intentos</b>\n"
     "Espera un momento y vuelve a intentar."
 )
 
