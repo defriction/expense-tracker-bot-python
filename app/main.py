@@ -1,30 +1,22 @@
-import os
-from fastapi import FastAPI, Request
-from telegram import Update
-from telegram.ext import Application
+﻿from fastapi import FastAPI
+from app.core.config import load_settings
+from app.bot.handlers import error_handler, get_handlers
+from app.routers.telegram import build_telegram_router
+from app.services.telegram import build_telegram_app
 
-from .handlers import get_handlers
-
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+settings = load_settings()
 
 app = FastAPI()
+telegram_app = build_telegram_app(settings.bot_token, get_handlers(), error_handler)
 
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+app.include_router(build_telegram_router(telegram_app, settings))
 
-for handler in get_handlers():
-    telegram_app.add_handler(handler)
 
 @app.on_event("startup")
 async def on_startup() -> None:
     await telegram_app.initialize()
 
+
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await telegram_app.shutdown()
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True}
