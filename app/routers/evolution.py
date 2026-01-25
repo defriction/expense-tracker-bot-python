@@ -35,7 +35,7 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
         if event != "messages.upsert":
             return {"ok": True}
 
-        bot_input = parse_evolution_webhook(data)
+        bot_input = await parse_evolution_webhook(data, evolution_client)
         if not bot_input:
             return {"ok": True}
 
