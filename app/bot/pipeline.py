@@ -354,24 +354,21 @@ class BotPipeline(PipelineBase):
 
     @staticmethod
     def _pick_latest(transactions: list[Dict[str, Any]]) -> Dict[str, Any]:
-        def to_ts(item: Dict[str, Any]) -> float:
-            date_value = str(item.get("date") or "")
-            if date_value and len(date_value) == 10:
-                try:
-                    return __import__('datetime').datetime.fromisoformat(date_value + "T00:00:00+00:00").timestamp()
-                except ValueError:
-                    pass
-            created_at = str(item.get("createdAt") or "")
-            try:
-                return __import__('datetime').datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                return float("-inf")
-
-        valid = [tx for tx in transactions if tx.get("txId")]
+        valid = [tx for tx in transactions if tx.get("txId") and not tx.get("isDeleted")]
         if not valid:
             return {"ok": False, "reason": "no_tx"}
 
-        valid.sort(key=to_ts, reverse=True)
+        def created_ts(item: Dict[str, Any]) -> float:
+            created_at = str(item.get("createdAt") or "")
+            try:
+                return __import__("datetime").datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                try:
+                    return float(str(item.get("txId") or "0").replace("TX-", ""))
+                except ValueError:
+                    return float("-inf")
+
+        valid.sort(key=created_ts, reverse=True)
         tx = valid[0]
         return {
             "ok": True,
