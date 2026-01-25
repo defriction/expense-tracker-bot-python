@@ -30,11 +30,11 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
             try:
                 payload = data.get("data") or {}
                 key = (payload.get("key") or {}) if isinstance(payload, dict) else {}
-                logger.info("EV DEBUG raw_event=%s", data.get("event"))
-                logger.info("EV DEBUG raw_key=%s", key)
+                logger.warning("EV DEBUG raw_event=%s", data.get("event"))
+                logger.warning("EV DEBUG raw_key=%s", key)
                 if isinstance(payload, dict):
-                    logger.info("EV DEBUG raw_payload_keys=%s", list(payload.keys()))
-                    logger.info(
+                    logger.warning("EV DEBUG raw_payload_keys=%s", list(payload.keys()))
+                    logger.warning(
                         "EV DEBUG ids remoteJid=%s participant(key)=%s participant(payload)=%s sender=%s senderJid=%s from=%s",
                         key.get("remoteJid"),
                         key.get("participant"),
@@ -51,7 +51,7 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
             return {"ok": False, "error": "invalid_json"}
 
         event = (data.get("event") or "").strip().lower().replace("_", ".")
-        logger.info("EV webhook event=%s", event)
+        logger.warning("EV webhook event=%s", event)
 
         if event != "messages.upsert":
             return {"ok": True}
