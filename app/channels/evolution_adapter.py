@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import httpx
 
@@ -10,31 +10,79 @@ from app.core.logging import logger
 from app.services.evolution import EvolutionClient
 
 
+def _jid_to_e164(to: str) -> str:
+    """
+    Evolution sendText/sendPoll suele esperar E.164 con '+' :contentReference[oaicite:5]{index=5}
+    Convierte:
+      - "573001234567@s.whatsapp.net" -> "+573001234567"
+      - "203714711277568@lid"         -> "+203714711277568"
+      - "+573001234567"               -> "+573001234567"
+      - "573001234567"                -> "+573001234567"
+    """
+    raw = (to or "").strip()
+    if not raw:
+        return raw
+
+    base = raw.split("@", 1)[0].strip()
+    if base.startswith("+"):
+        return base
+
+    # dejar solo dígitos
+    digits = "".join(ch for ch in base if ch.isdigit())
+    if not digits:
+        return base  # fallback
+    return f"+{digits}"
+
+
+def _poll_values_from_keyboard(message: BotMessage) -> List[str]:
+    # Polls necesitan opciones como texto; usa label, NO id
+    values: List[str] = []
+    for row in message.keyboard.rows:
+        for action in row:
+            label = (action.label or "").strip()
+            if label:
+                values.append(label)
+    return values[:12]  # límite práctico
+
+
 async def send_evolution_message(client: EvolutionClient, to: str, message: BotMessage) -> None:
     if not to:
         return
 
-    # Si hay teclado, intentamos poll. Si falla, mandamos texto plano.
+    number = _jid_to_e164(to)
+
+    # Si hay teclado, intentamos poll; si falla, texto plano
     if message.keyboard and message.keyboard.rows:
-        options: list[str] = []
-        for row in message.keyboard.rows:
-            for action in row:
-                options.append(action.id)
+        values = _poll_values_from_keyboard(message)
+        if not values:
+            # si no hay labels, manda texto
+            try:
+                await client.send_text(number, message.text, link_preview=False)
+            except httpx.HTTPError:
+                return
+            return
 
         try:
-            await client.send_poll(to, message.text, options, selectable_count=1)
+            await client.send_poll(number, message.text, values, selectable_count=1)
             return
         except httpx.HTTPError:
-            # Fallback: texto con opciones
-            text = message.text + "\n\n" + "\n".join(f"- {opt}" for opt in options)
-            await client.send_text(to, text, link_preview=False)
+            # fallback a texto enumerado
+            text = message.text + "\n\n" + "\n".join(f"{i+1}. {v}" for i, v in enumerate(values))
+            try:
+                await client.send_text(number, text, link_preview=False)
+            except httpx.HTTPError:
+                return
             return
 
-    await client.send_text(to, message.text, link_preview=False)
+    # Texto
+    try:
+        await client.send_text(number, message.text, link_preview=False)
+    except httpx.HTTPError:
+        return
 
 
 def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
-    event = (data.get("event") or "").strip().lower()
+    event = (data.get("event") or "").strip().lower().replace("_", ".")
     if event != "messages.upsert":
         return None
 

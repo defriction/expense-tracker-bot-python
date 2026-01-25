@@ -20,11 +20,13 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
         set_trace_id(f"ev-{client_host}")
         set_client_ip(client_host)
 
-        # Si configuraste evolution_api_key en el bot, Evolution DEBE mandarla en headers (ya lo hiciste en webhook/set)
-        if settings.evolution_api_key:
-            if apikey != settings.evolution_api_key:
-                logger.warning("Evolution webhook unauthorized apikey ip=%s apikey_present=%s", client_host, bool(apikey))
-                return {"ok": False, "error": "unauthorized"}
+        if settings.evolution_api_key and apikey != settings.evolution_api_key:
+            logger.warning(
+                "Evolution webhook unauthorized apikey ip=%s apikey_present=%s",
+                client_host,
+                bool(apikey),
+            )
+            return {"ok": False, "error": "unauthorized"}
 
         try:
             data = await request.json()
@@ -32,16 +34,21 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
             return {"ok": False, "error": "invalid_json"}
 
         event = (data.get("event") or "").strip().lower().replace("_", ".")
-        if event == "messages.upsert":
-            bot_input = parse_evolution_webhook(data)
-            if not bot_input:
-                return {"ok": True}
+        if event != "messages.upsert":
+            return {"ok": True}
 
-            logger.info("Evolution message received from=%s", bot_input.chat_id)
+        bot_input = parse_evolution_webhook(data)
+        if not bot_input:
+            return {"ok": True}
 
+        try:
             responses = await pipeline.handle_message(bot_input)
             for response in responses:
                 await send_evolution_message(evolution_client, str(bot_input.chat_id), response)
+        except Exception:
+            logger.exception("Evolution pipeline/send failed")
+            # No devolvemos 500 a Evolution
+            return {"ok": True}
 
         return {"ok": True}
 

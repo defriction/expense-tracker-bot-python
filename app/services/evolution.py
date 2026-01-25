@@ -1,39 +1,59 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 
+from app.core.config import Settings
 from app.core.logging import logger
 
 
-@dataclass(frozen=True)
 class EvolutionClient:
-    base_url: str
-    api_key: str
-    instance_name: str
-    timeout_seconds: float = 20.0
+    """
+    Retrocompatible:
+      - EvolutionClient(settings)
+      - EvolutionClient(base_url, api_key, instance_name)
+    """
 
-    async def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        url = f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
-        headers = {
+    def __init__(
+        self,
+        settings_or_base_url: Union[Settings, str],
+        api_key: Optional[str] = None,
+        instance_name: Optional[str] = None,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        if isinstance(settings_or_base_url, Settings):
+            settings = settings_or_base_url
+            self.base_url = settings.evolution_api_url.rstrip("/")
+            self.api_key = settings.evolution_api_key
+            self.instance_name = settings.evolution_instance_name
+        else:
+            base_url = settings_or_base_url
+            if not api_key or not instance_name:
+                raise TypeError("EvolutionClient(base_url, api_key, instance_name) requires api_key and instance_name")
+            self.base_url = base_url.rstrip("/")
+            self.api_key = api_key
+            self.instance_name = instance_name
+
+        self.timeout_seconds = timeout_seconds
+        self._headers = {
             "apikey": self.api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
+    async def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{self.base_url}/{path.lstrip('/')}"
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+            resp = await client.post(url, headers=self._headers, json=payload)
 
-        # Si falla, loguea el body para que el 400 te diga qué campo faltó
+        # Log del error para que veas el "message":[["..."]]
         if resp.status_code >= 400:
-            body = resp.text
             logger.error(
                 "Evolution API error status=%s url=%s response=%s payload=%s",
                 resp.status_code,
                 url,
-                body[:2000],
+                resp.text[:2000],
                 payload,
             )
             resp.raise_for_status()
@@ -43,42 +63,44 @@ class EvolutionClient:
 
     async def send_text(
         self,
-        number_or_jid: str,
+        number_e164: str,
         text: str,
         *,
-        delay_ms: int = 0,
-        presence: str = "composing",
-        link_preview: bool = False,
+        delay: Optional[int] = None,
+        link_preview: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        payload = {
-            "number": number_or_jid,
-            "textMessage": {"text": text},
-            "options": {
-                "delay": delay_ms,
-                "presence": presence,
-                "linkPreview": link_preview,
-            },
-        }
+        """
+        Evolution v2 SendText espera: { "number": "+E164", "text": "..." } :contentReference[oaicite:3]{index=3}
+        """
+        payload: Dict[str, Any] = {"number": number_e164, "text": text}
+        if delay is not None:
+            payload["delay"] = delay
+        if link_preview is not None:
+            payload["linkPreview"] = link_preview
+
         return await self._post(f"message/sendText/{self.instance_name}", payload)
 
     async def send_poll(
         self,
-        number_or_jid: str,
+        number_e164: str,
         name: str,
-        values: list[str],
+        values: List[str],
         *,
         selectable_count: int = 1,
-        delay_ms: int = 0,
-        presence: str = "composing",
     ) -> Dict[str, Any]:
-        payload = {
-            "number": number_or_jid,
+        """
+        Evolution v2 SendPoll espera:
+          { "number": "+E164", "name": "...", "values": [...], "selectableCount": 1 } :contentReference[oaicite:4]{index=4}
+        """
+        payload: Dict[str, Any] = {
+            "number": number_e164,
             "name": name,
-            "selectableCount": selectable_count,
             "values": values,
-            "options": {
-                "delay": delay_ms,
-                "presence": presence,
-            },
+            "selectableCount": selectable_count,
         }
         return await self._post(f"message/sendPoll/{self.instance_name}", payload)
+
+    # Aliases (para no romper código viejo)
+    async def send_message(self, to: str, text: str) -> Dict[str, Any]:
+        # OJO: aquí "to" debería ser E.164 (lo normalizamos en el adapter)
+        return await self.send_text(to, text, link_preview=False)
