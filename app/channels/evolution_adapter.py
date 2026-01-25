@@ -115,6 +115,10 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
     key = payload.get("key", {}) or {}
     message = payload.get("message", {}) or {}
 
+    logger.info("EV RAW key=%s", payload.get("key"))
+    logger.info("EV RAW data=%s",
+                {k: payload.get(k) for k in ["pushName", "participant", "sender", "senderJid", "from"]})
+
     if key.get("fromMe"):
         return None
 
