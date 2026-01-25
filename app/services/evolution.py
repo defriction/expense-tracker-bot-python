@@ -112,3 +112,35 @@ class EvolutionClient:
 
     async def send_message(self, to: str, text: str) -> Dict[str, Any]:
         return await self.send_text(to, text, link_preview=False)
+
+    async def get_base64_from_media_message(
+        self,
+        *,
+        key: Dict[str, Any],
+        message: Optional[Dict[str, Any]] = None,
+        convert_to_mp4: bool = False,
+    ) -> Dict[str, Any]:
+        """Fetch media bytes (as base64) for a message received via webhook.
+
+        Evolution's webhook events often include only the encrypted media metadata.
+        This endpoint asks Evolution to download/decrypt the media and return it
+        as base64.
+
+        v1 endpoint: POST /chat/getBase64FromMediaMessage/{instance}
+        Body expects at least { "message": { "key": ..., "message": ... } }
+        and optional { "convertToMp4": true } for audio.
+        """
+
+        payload: Dict[str, Any] = {
+            "message": {
+                "key": key,
+            },
+            "convertToMp4": bool(convert_to_mp4),
+        }
+
+        # If we already have the message object from the webhook, send it.
+        # Otherwise, Evolution will try to fetch the full message by key.
+        if message:
+            payload["message"]["message"] = message
+
+        return await self._post(f"chat/getBase64FromMediaMessage/{self.instance_name}", payload)

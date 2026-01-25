@@ -164,7 +164,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         return
 
 
-def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
+async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient) -> Optional[BotInput]:
     event = (data.get("event") or "").strip().lower().replace("_", ".")
     if event != "messages.upsert":
         return None
@@ -204,17 +204,37 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
         or ""
     )
 
-    audio_bytes = None
+    audio_bytes: Optional[bytes] = None
     non_text_type = None
 
     if "audioMessage" in message:
-        b64_data = message.get("base64")
+        non_text_type = "voice"
+
+        # 1) Some integrations attach base64 directly (rare, version-dependent)
+        b64_data = (
+            message.get("base64")
+            or (message.get("audioMessage", {}) or {}).get("base64")
+            or (message.get("audioMessage", {}) or {}).get("file")
+        )
         if b64_data:
             try:
                 audio_bytes = base64.b64decode(b64_data)
             except Exception:
-                pass
-        non_text_type = "voice"
+                audio_bytes = None
+
+        # 2) Normal case: ask Evolution to download/decrypt and return base64
+        if audio_bytes is None:
+            try:
+                media = await client.get_base64_from_media_message(
+                    key=key,
+                    message=message,
+                    convert_to_mp4=True,  # best compatibility for STT
+                )
+                media_b64 = (media or {}).get("base64")
+                if media_b64:
+                    audio_bytes = base64.b64decode(media_b64)
+            except Exception as exc:
+                logger.warning("EV getBase64FromMediaMessage failed: %s", exc)
     elif "imageMessage" in message:
         non_text_type = "photo"
 
