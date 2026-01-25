@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict, Optional, List
+import re
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -9,7 +10,6 @@ from app.bot.ui_models import BotInput, BotMessage
 from app.core.logging import logger
 from app.services.evolution import EvolutionClient
 
-import re
 
 def html_to_whatsapp(text: str) -> str:
     if not text:
@@ -43,35 +43,23 @@ def _safe_str(v: Any) -> str:
 
 
 def _extract_reply_to(payload: Dict[str, Any]) -> str:
-    """
-    Intenta resolver el destinatario correcto para responder.
-
-    Casos:
-    - key.remoteJid = "57...@s.whatsapp.net"  -> OK
-    - key.remoteJid = "...@g.us"              -> OK (grupo)
-    - key.remoteJid = "...@lid"               -> NO sirve para enviar
-      Entonces intentamos participant/senderJid/etc.
-    """
     key = (payload.get("key") or {})
     remote_jid = (key.get("remoteJid") or "")
 
-    # Si es un JID normal, úsalo
+    # JID normal
     if remote_jid.endswith("@s.whatsapp.net") or remote_jid.endswith("@g.us"):
         return remote_jid
 
-    # Si es LID, intenta otras pistas
+    # LID: intenta participant/sender
     if remote_jid.endswith("@lid"):
-        # Algunos payloads traen participant en key
         participant = (key.get("participant") or "")
         if participant.endswith("@s.whatsapp.net"):
             return participant
 
-        # A veces viene afuera en payload
         sender = (payload.get("sender") or payload.get("senderJid") or payload.get("participant") or "")
         if isinstance(sender, str) and sender.endswith("@s.whatsapp.net"):
             return sender
 
-        # Último intento: si el "from" viene como jid
         frm = payload.get("from")
         if isinstance(frm, str) and (frm.endswith("@s.whatsapp.net") or frm.endswith("@g.us")):
             return frm
@@ -79,13 +67,34 @@ def _extract_reply_to(payload: Dict[str, Any]) -> str:
     return remote_jid
 
 
-def _poll_values_from_keyboard(message: BotMessage) -> List[str]:
-    values: List[str] = []
+def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
+    """
+    Convierte keyboard -> rows para sendList.
+    rowId: idealmente action.id (comando), si no existe usa label.
+    """
+    rows: List[Dict[str, str]] = []
     for row in message.keyboard.rows:
         for action in row:
-            label = (action.label or "").strip()
-            if label:
-                values.append(label)
+            label = html_to_whatsapp((action.label or "").strip())
+            if not label:
+                continue
+
+            action_id = getattr(action, "id", None)
+            row_id = (action_id or label).strip()
+            row_id = html_to_whatsapp(row_id)
+
+            rows.append(
+                {
+                    "title": label,
+                    "description": "",
+                    "rowId": row_id,
+                }
+            )
+    return rows
+
+
+def _poll_values_from_rows(rows: List[Dict[str, str]]) -> List[str]:
+    values = [r["title"] for r in rows if (r.get("title") or "").strip()]
     return values[:12]
 
 
@@ -93,29 +102,46 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
     if not to:
         return
 
-    # Si es LID, no intentes enviar
+    # LID no sirve para enviar
     if to.endswith("@lid"):
-        logger.warning("Skipping reply to LID jid=%s (cannot sendText/sendPoll to LID)", to)
+        logger.warning("Skipping reply to LID jid=%s (cannot sendText/sendList/sendPoll to LID)", to)
         return
 
     text = html_to_whatsapp(message.text)
 
     if message.keyboard and message.keyboard.rows:
-        values = _poll_values_from_keyboard(message)
-        values = [html_to_whatsapp(v) for v in values]
+        rows = _rows_from_keyboard(message)
 
-        # Poll requiere mínimo 2 opciones
-        if len(values) < 2:
+        # mínimo 2 opciones para tener sentido
+        if len(rows) < 2:
             try:
                 await client.send_text(to, text, link_preview=False)
             except httpx.HTTPError:
                 return
             return
 
+        sections = [{"title": "Opciones", "rows": rows}]
+
+        # 1) intenta LIST (tipo Claro)
+        try:
+            await client.send_list(
+                to,
+                title="Menú",
+                description=text,
+                button_text="Abrir",
+                sections=sections,
+            )
+            return
+        except httpx.HTTPError:
+            pass
+
+        # 2) fallback: POLL (tu comportamiento actual)
+        values = _poll_values_from_rows(rows)
         try:
             await client.send_poll(to, text, values, selectable_count=1)
             return
         except httpx.HTTPError:
+            # 3) fallback final: texto plano enumerado
             fallback = text + "\n\n" + "\n".join(f"{i+1}. {v}" for i, v in enumerate(values))
             try:
                 await client.send_text(to, fallback, link_preview=False)
@@ -123,6 +149,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
                 return
             return
 
+    # sin keyboard
     try:
         await client.send_text(to, text, link_preview=False)
     except httpx.HTTPError:
@@ -141,8 +168,7 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
     if key.get("fromMe"):
         return None
 
-    # 🔎 LOGS: para entender por qué llega @lid y dónde viene el JID real
-    # (deja estos logs mientras estabilizas; luego los quitas)
+    # logs mientras estabilizas (luego quítalos)
     try:
         logger.info(
             "EV webhook key.remoteJid=%s key.participant=%s payload.keys=%s",
@@ -155,8 +181,15 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
 
     reply_to = _extract_reply_to(payload)
 
-    # Extraer texto
-    text = (
+    # 1) respuesta de LIST (tipo Claro)
+    selected_row_id = (
+        (message.get("listResponseMessage", {}) or {})
+        .get("singleSelectReply", {})
+        .get("selectedRowId")
+    )
+
+    # 2) texto normal
+    text = selected_row_id or (
         message.get("conversation")
         or (message.get("extendedTextMessage", {}) or {}).get("text")
         or (message.get("imageMessage", {}) or {}).get("caption")
@@ -180,7 +213,7 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
 
     return BotInput(
         channel="evolution",
-        chat_id=reply_to,      # 👈 aquí guardamos el JID correcto para responder
+        chat_id=reply_to,
         user_id=reply_to,
         text=text,
         message_id=key.get("id"),

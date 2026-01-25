@@ -67,10 +67,6 @@ class EvolutionClient:
         *,
         link_preview: bool = False,
     ) -> Dict[str, Any]:
-        """
-        Body v2 común:
-          { "number": "<jid o +E164>", "text": "..." }
-        """
         payload: Dict[str, Any] = {
             "number": to,
             "text": text,
@@ -86,10 +82,6 @@ class EvolutionClient:
         *,
         selectable_count: int = 1,
     ) -> Dict[str, Any]:
-        """
-        Body típico:
-          { "number": "<jid o +E164>", "name": "...", "values": [...], "selectableCount": 1 }
-        """
         payload: Dict[str, Any] = {
             "number": to,
             "name": name,
@@ -97,6 +89,28 @@ class EvolutionClient:
             "selectableCount": selectable_count,
         }
         return await self._post(f"message/sendPoll/{self.instance_name}", payload)
+
+    async def send_list(
+        self,
+        to: str,
+        *,
+        title: str,
+        description: str,
+        button_text: str,
+        sections: List[Dict[str, Any]],
+        footer_text: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "number": to,
+            "title": title,
+            "description": description,
+            "buttonText": button_text,
+            "sections": sections,
+        }
+        if footer_text:
+            payload["footerText"] = footer_text
+
+        return await self._post(f"message/sendList/{self.instance_name}", payload)
 
     # Alias para compatibilidad
     async def send_message(self, to: str, text: str) -> Dict[str, Any]:
