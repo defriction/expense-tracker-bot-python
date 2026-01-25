@@ -28,7 +28,9 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
         except Exception:
             return {"ok": False, "error": "invalid_json"}
 
-        event = data.get("event")
+        event_base = (data.get("event") or "").strip()
+        event = event_base.lower().replace("_", ".")
+
         # Handle message upsert (new messages)
         if event == "messages.upsert":
             bot_input = parse_evolution_webhook(data)
