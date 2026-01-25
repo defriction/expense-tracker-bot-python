@@ -115,9 +115,23 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
     key = payload.get("key", {}) or {}
     message = payload.get("message", {}) or {}
 
-    logger.info("EV RAW key=%s", payload.get("key"))
-    logger.info("EV RAW data=%s",
-                {k: payload.get(k) for k in ["pushName", "participant", "sender", "senderJid", "from"]})
+    # ===== DEBUG EVOLUTION PAYLOAD =====
+    try:
+        logger.info("EV DEBUG event=%s", data.get("event"))
+        logger.info("EV DEBUG key=%s", key)
+        logger.info("EV DEBUG payload_keys=%s", list(payload.keys()))
+        logger.info(
+            "EV DEBUG possible_ids remoteJid=%s participant=%s sender=%s senderJid=%s from=%s",
+            key.get("remoteJid"),
+            key.get("participant"),
+            payload.get("participant"),
+            payload.get("sender"),
+            payload.get("senderJid"),
+            payload.get("from"),
+        )
+    except Exception:
+        logger.exception("EV DEBUG logging failed")
+    # ==================================
 
     if key.get("fromMe"):
         return None
