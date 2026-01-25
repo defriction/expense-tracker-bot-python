@@ -9,6 +9,31 @@ from app.bot.ui_models import BotInput, BotMessage
 from app.core.logging import logger
 from app.services.evolution import EvolutionClient
 
+import re
+
+def html_to_whatsapp(text: str) -> str:
+    if not text:
+        return text
+
+    s = text
+
+    # line breaks
+    s = s.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+
+    # bold / italic
+    s = re.sub(r"</?b>", "*", s, flags=re.IGNORECASE)
+    s = re.sub(r"</?strong>", "*", s, flags=re.IGNORECASE)
+    s = re.sub(r"</?i>", "_", s, flags=re.IGNORECASE)
+    s = re.sub(r"</?em>", "_", s, flags=re.IGNORECASE)
+
+    # code
+    s = re.sub(r"</?code>", "```", s, flags=re.IGNORECASE)
+
+    # remove any remaining tags
+    s = re.sub(r"<[^>]+>", "", s)
+
+    return s
+
 
 def _safe_str(v: Any) -> str:
     try:
@@ -68,40 +93,38 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
     if not to:
         return
 
-    # Si es LID, no intentes enviar: Evolution lo valida y devuelve exists=false
+    # Si es LID, no intentes enviar
     if to.endswith("@lid"):
         logger.warning("Skipping reply to LID jid=%s (cannot sendText/sendPoll to LID)", to)
         return
 
+    text = html_to_whatsapp(message.text)
+
     if message.keyboard and message.keyboard.rows:
         values = _poll_values_from_keyboard(message)
+        values = [html_to_whatsapp(v) for v in values]
 
         # Poll requiere mínimo 2 opciones
         if len(values) < 2:
-            logger.info("Poll skipped (need >=2 options). to=%s options=%s", to, values)
-            try:
-                await client.send_text(to, message.text, link_preview=False)
-            except httpx.HTTPError:
-                return
-            return
-
-        logger.info("Sending poll to=%s options=%s", to, values)
-
-        try:
-            await client.send_poll(to, message.text, values, selectable_count=1)
-            return
-        except httpx.HTTPError:
-            # Fallback a texto enumerado
-            text = message.text + "\n\n" + "\n".join(f"{i+1}. {v}" for i, v in enumerate(values))
             try:
                 await client.send_text(to, text, link_preview=False)
             except httpx.HTTPError:
                 return
             return
 
-    # Texto normal
+        try:
+            await client.send_poll(to, text, values, selectable_count=1)
+            return
+        except httpx.HTTPError:
+            fallback = text + "\n\n" + "\n".join(f"{i+1}. {v}" for i, v in enumerate(values))
+            try:
+                await client.send_text(to, fallback, link_preview=False)
+            except httpx.HTTPError:
+                return
+            return
+
     try:
-        await client.send_text(to, message.text, link_preview=False)
+        await client.send_text(to, text, link_preview=False)
     except httpx.HTTPError:
         return
 
