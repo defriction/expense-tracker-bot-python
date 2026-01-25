@@ -47,13 +47,12 @@ class EvolutionClient:
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             resp = await client.post(url, headers=self._headers, json=payload)
 
-        # Log del error para que veas el "message":[["..."]]
         if resp.status_code >= 400:
             logger.error(
                 "Evolution API error status=%s url=%s response=%s payload=%s",
                 resp.status_code,
                 url,
-                resp.text[:2000],
+                resp.text[:3000],
                 payload,
             )
             resp.raise_for_status()
@@ -63,44 +62,42 @@ class EvolutionClient:
 
     async def send_text(
         self,
-        number_e164: str,
+        to: str,
         text: str,
         *,
-        delay: Optional[int] = None,
-        link_preview: Optional[bool] = None,
+        link_preview: bool = False,
     ) -> Dict[str, Any]:
         """
-        Evolution v2 SendText espera: { "number": "+E164", "text": "..." } :contentReference[oaicite:3]{index=3}
+        Body v2 común:
+          { "number": "<jid o +E164>", "text": "..." }
         """
-        payload: Dict[str, Any] = {"number": number_e164, "text": text}
-        if delay is not None:
-            payload["delay"] = delay
-        if link_preview is not None:
-            payload["linkPreview"] = link_preview
-
+        payload: Dict[str, Any] = {
+            "number": to,
+            "text": text,
+            "linkPreview": link_preview,
+        }
         return await self._post(f"message/sendText/{self.instance_name}", payload)
 
     async def send_poll(
         self,
-        number_e164: str,
+        to: str,
         name: str,
         values: List[str],
         *,
         selectable_count: int = 1,
     ) -> Dict[str, Any]:
         """
-        Evolution v2 SendPoll espera:
-          { "number": "+E164", "name": "...", "values": [...], "selectableCount": 1 } :contentReference[oaicite:4]{index=4}
+        Body típico:
+          { "number": "<jid o +E164>", "name": "...", "values": [...], "selectableCount": 1 }
         """
         payload: Dict[str, Any] = {
-            "number": number_e164,
+            "number": to,
             "name": name,
             "values": values,
             "selectableCount": selectable_count,
         }
         return await self._post(f"message/sendPoll/{self.instance_name}", payload)
 
-    # Aliases (para no romper código viejo)
+    # Alias para compatibilidad
     async def send_message(self, to: str, text: str) -> Dict[str, Any]:
-        # OJO: aquí "to" debería ser E.164 (lo normalizamos en el adapter)
         return await self.send_text(to, text, link_preview=False)

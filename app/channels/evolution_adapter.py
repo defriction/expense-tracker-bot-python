@@ -10,73 +10,98 @@ from app.core.logging import logger
 from app.services.evolution import EvolutionClient
 
 
-def _jid_to_e164(to: str) -> str:
-    """
-    Evolution sendText/sendPoll suele esperar E.164 con '+' :contentReference[oaicite:5]{index=5}
-    Convierte:
-      - "573001234567@s.whatsapp.net" -> "+573001234567"
-      - "203714711277568@lid"         -> "+203714711277568"
-      - "+573001234567"               -> "+573001234567"
-      - "573001234567"                -> "+573001234567"
-    """
-    raw = (to or "").strip()
-    if not raw:
-        return raw
+def _safe_str(v: Any) -> str:
+    try:
+        return str(v)
+    except Exception:
+        return "<unprintable>"
 
-    base = raw.split("@", 1)[0].strip()
-    if base.startswith("+"):
-        return base
 
-    # dejar solo dígitos
-    digits = "".join(ch for ch in base if ch.isdigit())
-    if not digits:
-        return base  # fallback
-    return f"+{digits}"
+def _extract_reply_to(payload: Dict[str, Any]) -> str:
+    """
+    Intenta resolver el destinatario correcto para responder.
+
+    Casos:
+    - key.remoteJid = "57...@s.whatsapp.net"  -> OK
+    - key.remoteJid = "...@g.us"              -> OK (grupo)
+    - key.remoteJid = "...@lid"               -> NO sirve para enviar
+      Entonces intentamos participant/senderJid/etc.
+    """
+    key = (payload.get("key") or {})
+    remote_jid = (key.get("remoteJid") or "")
+
+    # Si es un JID normal, úsalo
+    if remote_jid.endswith("@s.whatsapp.net") or remote_jid.endswith("@g.us"):
+        return remote_jid
+
+    # Si es LID, intenta otras pistas
+    if remote_jid.endswith("@lid"):
+        # Algunos payloads traen participant en key
+        participant = (key.get("participant") or "")
+        if participant.endswith("@s.whatsapp.net"):
+            return participant
+
+        # A veces viene afuera en payload
+        sender = (payload.get("sender") or payload.get("senderJid") or payload.get("participant") or "")
+        if isinstance(sender, str) and sender.endswith("@s.whatsapp.net"):
+            return sender
+
+        # Último intento: si el "from" viene como jid
+        frm = payload.get("from")
+        if isinstance(frm, str) and (frm.endswith("@s.whatsapp.net") or frm.endswith("@g.us")):
+            return frm
+
+    return remote_jid
 
 
 def _poll_values_from_keyboard(message: BotMessage) -> List[str]:
-    # Polls necesitan opciones como texto; usa label, NO id
     values: List[str] = []
     for row in message.keyboard.rows:
         for action in row:
             label = (action.label or "").strip()
             if label:
                 values.append(label)
-    return values[:12]  # límite práctico
+    return values[:12]
 
 
 async def send_evolution_message(client: EvolutionClient, to: str, message: BotMessage) -> None:
     if not to:
         return
 
-    number = _jid_to_e164(to)
+    # Si es LID, no intentes enviar: Evolution lo valida y devuelve exists=false
+    if to.endswith("@lid"):
+        logger.warning("Skipping reply to LID jid=%s (cannot sendText/sendPoll to LID)", to)
+        return
 
-    # Si hay teclado, intentamos poll; si falla, texto plano
     if message.keyboard and message.keyboard.rows:
         values = _poll_values_from_keyboard(message)
-        if not values:
-            # si no hay labels, manda texto
+
+        # Poll requiere mínimo 2 opciones
+        if len(values) < 2:
+            logger.info("Poll skipped (need >=2 options). to=%s options=%s", to, values)
             try:
-                await client.send_text(number, message.text, link_preview=False)
+                await client.send_text(to, message.text, link_preview=False)
             except httpx.HTTPError:
                 return
             return
+
+        logger.info("Sending poll to=%s options=%s", to, values)
 
         try:
-            await client.send_poll(number, message.text, values, selectable_count=1)
+            await client.send_poll(to, message.text, values, selectable_count=1)
             return
         except httpx.HTTPError:
-            # fallback a texto enumerado
+            # Fallback a texto enumerado
             text = message.text + "\n\n" + "\n".join(f"{i+1}. {v}" for i, v in enumerate(values))
             try:
-                await client.send_text(number, text, link_preview=False)
+                await client.send_text(to, text, link_preview=False)
             except httpx.HTTPError:
                 return
             return
 
-    # Texto
+    # Texto normal
     try:
-        await client.send_text(number, message.text, link_preview=False)
+        await client.send_text(to, message.text, link_preview=False)
     except httpx.HTTPError:
         return
 
@@ -90,12 +115,24 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
     key = payload.get("key", {}) or {}
     message = payload.get("message", {}) or {}
 
-    # Ignore self messages
     if key.get("fromMe"):
         return None
 
-    remote_jid = key.get("remoteJid", "") or ""
+    # 🔎 LOGS: para entender por qué llega @lid y dónde viene el JID real
+    # (deja estos logs mientras estabilizas; luego los quitas)
+    try:
+        logger.info(
+            "EV webhook key.remoteJid=%s key.participant=%s payload.keys=%s",
+            _safe_str(key.get("remoteJid")),
+            _safe_str(key.get("participant")),
+            list(payload.keys()),
+        )
+    except Exception:
+        pass
 
+    reply_to = _extract_reply_to(payload)
+
+    # Extraer texto
     text = (
         message.get("conversation")
         or (message.get("extendedTextMessage", {}) or {}).get("text")
@@ -120,8 +157,8 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
 
     return BotInput(
         channel="evolution",
-        chat_id=remote_jid,
-        user_id=remote_jid,
+        chat_id=reply_to,      # 👈 aquí guardamos el JID correcto para responder
+        user_id=reply_to,
         text=text,
         message_id=key.get("id"),
         audio_bytes=audio_bytes,
