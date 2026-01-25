@@ -106,12 +106,9 @@ class EvolutionClient:
             "description": description,
             "buttonText": button_text,
             "sections": sections,
+            "footerText": footer_text if footer_text is not None else " ",
         }
-        if footer_text:
-            payload["footerText"] = footer_text
-
         return await self._post(f"message/sendList/{self.instance_name}", payload)
 
-    # Alias para compatibilidad
     async def send_message(self, to: str, text: str) -> Dict[str, Any]:
         return await self.send_text(to, text, link_preview=False)

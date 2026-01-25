@@ -46,11 +46,9 @@ def _extract_reply_to(payload: Dict[str, Any]) -> str:
     key = (payload.get("key") or {})
     remote_jid = (key.get("remoteJid") or "")
 
-    # JID normal
     if remote_jid.endswith("@s.whatsapp.net") or remote_jid.endswith("@g.us"):
         return remote_jid
 
-    # LID: intenta participant/sender
     if remote_jid.endswith("@lid"):
         participant = (key.get("participant") or "")
         if participant.endswith("@s.whatsapp.net"):
@@ -69,8 +67,9 @@ def _extract_reply_to(payload: Dict[str, Any]) -> str:
 
 def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
     """
-    Convierte keyboard -> rows para sendList.
-    rowId: idealmente action.id (comando), si no existe usa label.
+    keyboard -> rows para sendList.
+    rowId: ideal action.id (comando); si no existe, usa label.
+    Nota: Evolution (tu instancia) exige row.description NO vacío.
     """
     rows: List[Dict[str, str]] = []
     for row in message.keyboard.rows:
@@ -86,25 +85,41 @@ def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
             rows.append(
                 {
                     "title": label,
-                    "description": "",
+                    "description": " ",  # requerido por validación de Evolution
                     "rowId": row_id,
                 }
             )
     return rows
 
 
-def _poll_values_from_rows(rows: List[Dict[str, str]]) -> List[str]:
-    values = [r["title"] for r in rows if (r.get("title") or "").strip()]
-    return values[:12]
+def _commands_fallback(text: str, rows: List[Dict[str, str]]) -> str:
+    """
+    Fallback sin encuesta: comandos para tocar/copiar/enviar.
+    """
+    lines: List[str] = []
+    for r in rows:
+        cmd = (r.get("rowId") or "").strip()
+        title = (r.get("title") or "").strip()
+        if not cmd or not title:
+            continue
+        lines.append(f"• `{cmd}` – {title}")
+
+    if not lines:
+        return text
+
+    return (
+        f"{text}\n\n"
+        "👉 *Si no ves el menú, escribe o toca un comando:*\n"
+        + "\n".join(lines)
+    )
 
 
 async def send_evolution_message(client: EvolutionClient, to: str, message: BotMessage) -> None:
     if not to:
         return
 
-    # LID no sirve para enviar
     if to.endswith("@lid"):
-        logger.warning("Skipping reply to LID jid=%s (cannot sendText/sendList/sendPoll to LID)", to)
+        logger.warning("Skipping reply to LID jid=%s (cannot sendText/sendList to LID)", to)
         return
 
     text = html_to_whatsapp(message.text)
@@ -112,7 +127,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
     if message.keyboard and message.keyboard.rows:
         rows = _rows_from_keyboard(message)
 
-        # mínimo 2 opciones para tener sentido
+        # mínimo 2 opciones
         if len(rows) < 2:
             try:
                 await client.send_text(to, text, link_preview=False)
@@ -122,7 +137,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
 
         sections = [{"title": "Opciones", "rows": rows}]
 
-        # 1) intenta LIST (tipo Claro)
+        # 1) Siempre intentar LIST (tipo Claro)
         try:
             await client.send_list(
                 to,
@@ -135,21 +150,14 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         except httpx.HTTPError:
             pass
 
-        # 2) fallback: POLL (tu comportamiento actual)
-        values = _poll_values_from_rows(rows)
+        # 2) Fallback: comandos tocables (no encuesta)
+        fallback = _commands_fallback(text, rows)
         try:
-            await client.send_poll(to, text, values, selectable_count=1)
-            return
+            await client.send_text(to, fallback, link_preview=False)
         except httpx.HTTPError:
-            # 3) fallback final: texto plano enumerado
-            fallback = text + "\n\n" + "\n".join(f"{i+1}. {v}" for i, v in enumerate(values))
-            try:
-                await client.send_text(to, fallback, link_preview=False)
-            except httpx.HTTPError:
-                return
             return
+        return
 
-    # sin keyboard
     try:
         await client.send_text(to, text, link_preview=False)
     except httpx.HTTPError:
@@ -168,7 +176,6 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
     if key.get("fromMe"):
         return None
 
-    # logs mientras estabilizas (luego quítalos)
     try:
         logger.info(
             "EV webhook key.remoteJid=%s key.participant=%s payload.keys=%s",
@@ -181,14 +188,14 @@ def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
 
     reply_to = _extract_reply_to(payload)
 
-    # 1) respuesta de LIST (tipo Claro)
+    # LIST response (tipo Claro)
     selected_row_id = (
         (message.get("listResponseMessage", {}) or {})
         .get("singleSelectReply", {})
         .get("selectedRowId")
     )
 
-    # 2) texto normal
+    # texto normal
     text = selected_row_id or (
         message.get("conversation")
         or (message.get("extendedTextMessage", {}) or {}).get("text")
