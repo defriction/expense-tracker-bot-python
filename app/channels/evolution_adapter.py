@@ -127,7 +127,6 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
     if message.keyboard and message.keyboard.rows:
         rows = _rows_from_keyboard(message)
 
-        # mínimo 2 opciones
         if len(rows) < 2:
             try:
                 await client.send_text(to, text, link_preview=False)
@@ -135,22 +134,21 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
                 return
             return
 
-        sections = [{"title": "Opciones", "rows": rows}]
+        # Disable inline buttons
+        #sections = [{"title": "Opciones", "rows": rows}]
 
-        # 1) Siempre intentar LIST (tipo Claro)
-        try:
-            await client.send_list(
-                to,
-                title="Menú",
-                description=text,
-                button_text="Abrir",
-                sections=sections,
-            )
-            return
-        except httpx.HTTPError:
-            pass
+        # try:
+        #     await client.send_list(
+        #         to,
+        #         title="Menú",
+        #         description=text,
+        #         button_text="Abrir",
+        #         sections=sections,
+        #     )
+        #     return
+        # except httpx.HTTPError:
+        #     pass
 
-        # 2) Fallback: comandos tocables (no encuesta)
         fallback = _commands_fallback(text, rows)
         try:
             await client.send_text(to, fallback, link_preview=False)
@@ -188,14 +186,12 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
 
     reply_to = _extract_reply_to(payload)
 
-    # LIST response (tipo Claro)
     selected_row_id = (
         (message.get("listResponseMessage", {}) or {})
         .get("singleSelectReply", {})
         .get("selectedRowId")
     )
 
-    # texto normal
     text = selected_row_id or (
         message.get("conversation")
         or (message.get("extendedTextMessage", {}) or {}).get("text")
@@ -210,7 +206,6 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
     if "audioMessage" in message:
         non_text_type = "voice"
 
-        # 1) Some integrations attach base64 directly (rare, version-dependent)
         b64_data = (
             message.get("base64")
             or (message.get("audioMessage", {}) or {}).get("base64")
@@ -222,7 +217,6 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
             except Exception:
                 audio_bytes = None
 
-        # 2) Normal case: ask Evolution to download/decrypt and return base64
         if audio_bytes is None:
             try:
                 media = await client.get_base64_from_media_message(
