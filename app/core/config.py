@@ -16,6 +16,9 @@ class Settings:
     admin_telegram_chat_id: Optional[str]
     database_url: Optional[str]
     telegram_webhook_secret: Optional[str]
+    evolution_api_url: Optional[str] = None
+    evolution_api_key: Optional[str] = None
+    evolution_instance_name: Optional[str] = None
     max_input_chars: int = 1200
     max_output_tokens: int = 400
     rate_limit_per_user_per_min: int = 60
@@ -59,6 +62,9 @@ def load_settings() -> Settings:
         admin_telegram_chat_id=_get_env("ADMIN_TELEGRAM_CHAT_ID"),
         database_url=_get_env("DATABASE_URL"),
         telegram_webhook_secret=_get_env("TELEGRAM_WEBHOOK_SECRET"),
+        evolution_api_url=_get_env("EVOLUTION_API_URL"),
+        evolution_api_key=_get_env("EVOLUTION_API_KEY"),
+        evolution_instance_name=_get_env("EVOLUTION_INSTANCE_NAME"),
         max_input_chars=_get_int_env("MAX_INPUT_CHARS", 1200),
         max_output_tokens=_get_int_env("GROQ_MAX_OUTPUT_TOKENS", 400),
         rate_limit_per_user_per_min=_get_int_env("RATE_LIMIT_USER_PER_MIN", 60),
