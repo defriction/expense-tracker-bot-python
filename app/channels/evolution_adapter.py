@@ -1,102 +1,58 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
+
+import httpx
 
 from app.bot.ui_models import BotInput, BotMessage
+from app.core.logging import logger
 from app.services.evolution import EvolutionClient
 
 
-def _normalize_number(to: str) -> str:
-    """
-    Evolution sendPoll NO acepta JID.
-    Convierte:
-    - 573001234567@s.whatsapp.net -> 573001234567
-    - 203714711277568@lid -> 203714711277568
-    - +573001234567 -> 573001234567
-    """
-    base = to.split("@", 1)[0].strip()
-    if base.startswith("+"):
-        base = base[1:]
-    return base
-
-
-def _poll_values_from_keyboard(message: BotMessage) -> List[str]:
-    """
-    Polls de WhatsApp requieren textos cortos.
-    Usamos label (NO id).
-    """
-    values: List[str] = []
-    for row in message.keyboard.rows:
-        for action in row:
-            label = (action.label or "").strip()
-            if label:
-                values.append(label)
-
-    # WhatsApp permite hasta 12 opciones
-    return values[:12]
-
-
-async def send_evolution_message(
-    client: EvolutionClient,
-    to: str,
-    message: BotMessage,
-) -> None:
+async def send_evolution_message(client: EvolutionClient, to: str, message: BotMessage) -> None:
     if not to:
         return
 
-    # Si hay teclado → intentamos poll
+    # Si hay teclado, intentamos poll. Si falla, mandamos texto plano.
     if message.keyboard and message.keyboard.rows:
-        number = _normalize_number(to)
-        values = _poll_values_from_keyboard(message)
-
-        # Fallback seguro
-        if not values:
-            await client.send_message(to, message.text)
-            return
+        options: list[str] = []
+        for row in message.keyboard.rows:
+            for action in row:
+                options.append(action.id)
 
         try:
-            await client.send_poll(
-                number=number,
-                name=message.text,
-                values=values,
-                selectable_count=1,
-            )
-        except Exception:
-            # Si Evolution responde 400, degradamos a texto
-            text = message.text + "\n\n" + "\n".join(
-                f"{i+1}. {v}" for i, v in enumerate(values)
-            )
-            await client.send_message(to, text)
-        return
+            await client.send_poll(to, message.text, options, selectable_count=1)
+            return
+        except httpx.HTTPError:
+            # Fallback: texto con opciones
+            text = message.text + "\n\n" + "\n".join(f"- {opt}" for opt in options)
+            await client.send_text(to, text, link_preview=False)
+            return
 
-    # Texto plano
-    await client.send_message(to, message.text)
+    await client.send_text(to, message.text, link_preview=False)
 
 
 def parse_evolution_webhook(data: Dict[str, Any]) -> Optional[BotInput]:
-    """
-    Normalizado para Evolution v2
-    """
-    event = (data.get("event") or "").strip().lower().replace("_", ".")
+    event = (data.get("event") or "").strip().lower()
     if event != "messages.upsert":
         return None
 
-    payload = data.get("data", {})
-    key = payload.get("key", {})
-    message = payload.get("message", {})
+    payload = data.get("data", {}) or {}
+    key = payload.get("key", {}) or {}
+    message = payload.get("message", {}) or {}
 
-    # Ignorar mensajes propios
+    # Ignore self messages
     if key.get("fromMe"):
         return None
 
-    remote_jid = key.get("remoteJid", "")
+    remote_jid = key.get("remoteJid", "") or ""
 
     text = (
         message.get("conversation")
-        or message.get("extendedTextMessage", {}).get("text")
-        or message.get("imageMessage", {}).get("caption")
-        or message.get("videoMessage", {}).get("caption")
+        or (message.get("extendedTextMessage", {}) or {}).get("text")
+        or (message.get("imageMessage", {}) or {}).get("caption")
+        or (message.get("videoMessage", {}) or {}).get("caption")
         or ""
     )
 
