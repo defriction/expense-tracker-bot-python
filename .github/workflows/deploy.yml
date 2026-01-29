@@ -1,0 +1,50 @@
+name: Deploy Tennis Bot
+
+on:
+  push:
+    branches: [ main, develop ] # Asegúrate de que tu rama se llama 'main'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    
+    # 1. Descargar el código
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    # 2. Copiar archivos al VPS (Usando la ruta específica)
+    - name: 🚚 Copy files via SCP
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.VPS_HOST }}
+        username: ${{ secrets.VPS_USER }}
+        key: ${{ secrets.VPS_SSH_KEY }}
+        source: "."
+        # NOTA: Agregamos '/expense-tracker-bot' para que tenga su propia carpeta ordenada
+        target: "/root/apps/automations/expense-tracker-bot"
+
+    # 3. Entrar y Ejecutar Docker
+    - name: 🚀 Deploy via SSH
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.VPS_HOST }}
+        username: ${{ secrets.VPS_USER }}
+        key: ${{ secrets.VPS_SSH_KEY }}
+        script: |
+          # Crear la carpeta si no existe
+          mkdir -p /root/apps/automations/expense-tracker-bot
+          
+          # Entrar al directorio
+          cd /root/apps/automations/expense-tracker-bot
+          
+          # Crear archivo .env desde secretos
+          echo "${{ secrets.ENV_FILE_EXPENSE }}" > .env
+          
+          # Reiniciar el servicio
+          echo "🔄 Desplegando nueva versión..."
+          docker compose down
+          docker compose up -d --build
+          
+          # Limpiar imágenes viejas para ahorrar espacio
+          docker image prune -f
