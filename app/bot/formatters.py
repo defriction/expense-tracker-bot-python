@@ -258,28 +258,47 @@ def _delta_icon(curr: float, prev: float) -> str:
     return "➖"
 
 
-def _render_top_list(curr: Dict[str, float], curr_total: float, prev: Dict[str, float]) -> str:
+def _short_label(label: str, max_len: int) -> str:
+    label = label.strip()
+    if len(label) <= max_len:
+        return label
+    if max_len <= 3:
+        return label[:max_len]
+    return label[: max_len - 1] + "…"
+
+
+def _render_top_list(
+    curr: Dict[str, float],
+    curr_total: float,
+    prev: Dict[str, float],
+    *,
+    compact: bool = False,
+) -> str:
     entries = sorted(curr.items(), key=lambda item: item[1], reverse=True)
     if not entries:
         return "<pre>— Sin movimientos</pre>"
 
-    top = entries[:5]
+    top = entries[:4] if compact else entries[:5]
     rest = entries[5:]
     others = sum(value for _, value in rest)
     rows = top + ([("Otros", others)] if others > 0 else [])
 
-    max_label = min(18, max([len(str(label)) for label, _ in rows] + [8]))
-    header = f"{'Categoría'.ljust(max_label)}  {'Valor'.rjust(14)}  {'%'.rjust(4)}  {'Δ%'.rjust(4)}"
+    max_label = 12 if compact else min(18, max([len(str(label)) for label, _ in rows] + [8]))
+    if compact:
+        header = f"{'Cat'.ljust(max_label)}  {'Valor'.rjust(12)}  {'%'.rjust(4)}"
+    else:
+        header = f"{'Categoría'.ljust(max_label)}  {'Valor'.rjust(14)}  {'%'.rjust(4)}  {'Δ%'.rjust(4)}"
 
     lines = []
     for label, value in rows:
         prev_val = float(prev.get(label, 0))
         pct = f"{round((value / curr_total) * 100)}%" if curr_total else "0%"
-        d_pct = _format_delta_pct(value, prev_val)
-        line = (
-            f"{escape_html(str(label)).ljust(max_label)}  "
-            f"{format_currency(value).rjust(14)}  {pct.rjust(4)}  {str(d_pct).rjust(4)}"
-        )
+        label_text = escape_html(_short_label(str(label), max_label)).ljust(max_label)
+        if compact:
+            line = f"{label_text}  {format_currency(value).rjust(12)}  {pct.rjust(4)}"
+        else:
+            d_pct = _format_delta_pct(value, prev_val)
+            line = f"{label_text}  {format_currency(value).rjust(14)}  {pct.rjust(4)}  {str(d_pct).rjust(4)}"
         lines.append(line)
 
     return f"<pre>{header}\n" + "\n".join(lines) + "</pre>"
@@ -309,7 +328,7 @@ def _render_largest(title: str, tx: Optional[Dict[str, object]]) -> str:
     return message
 
 
-def format_summary_message(transactions: List[Dict[str, object]]) -> str:
+def format_summary_message(transactions: List[Dict[str, object]], *, compact: bool = False) -> str:
     filtered = [
         tx
         for tx in transactions
@@ -354,10 +373,13 @@ def format_summary_message(transactions: List[Dict[str, object]]) -> str:
         "Diciembre",
     ]
 
-    header = (
-        f"📊 <b>Resumen · {meses[current_month]} {current_year}</b>\n"
-        f"<i>Comparativo vs {meses[prev_month]} {prev_year} · Día {current_day}/{days_in_month} · TZ: America/Bogota</i>"
-    )
+    if compact:
+        header = f"📊 <b>Resumen · {meses[current_month]} {current_year}</b>\n<i>Día {current_day}/{days_in_month} · TZ: America/Bogota</i>"
+    else:
+        header = (
+            f"📊 <b>Resumen · {meses[current_month]} {current_year}</b>\n"
+            f"<i>Comparativo vs {meses[prev_month]} {prev_year} · Día {current_day}/{days_in_month} · TZ: America/Bogota</i>"
+        )
 
     entradas_total = (
         f"<b>Total entradas:</b> {format_currency(curr.sum_income)}  "
@@ -370,13 +392,13 @@ def format_summary_message(transactions: List[Dict[str, object]]) -> str:
 
     entradas_block = (
         "🟢 <b>Entradas</b>\n"
-        f"{_render_top_list(curr.totals_income, curr.sum_income, prev.totals_income)}\n"
+        f"{_render_top_list(curr.totals_income, curr.sum_income, prev.totals_income, compact=compact)}\n"
         f"{entradas_total}\n"
         f"<b># Transacciones:</b> {curr.count_income} · <b>Promedio:</b> {format_currency(curr.sum_income / curr.count_income if curr.count_income else 0)}"
     )
     salidas_block = (
         "🔴 <b>Salidas</b>\n"
-        f"{_render_top_list(curr.totals_expense, curr.sum_expense, prev.totals_expense)}\n"
+        f"{_render_top_list(curr.totals_expense, curr.sum_expense, prev.totals_expense, compact=compact)}\n"
         f"{salidas_total}\n"
         f"<b># Transacciones:</b> {curr.count_expense} · <b>Promedio:</b> {format_currency(curr.sum_expense / curr.count_expense if curr.count_expense else 0)}"
     )

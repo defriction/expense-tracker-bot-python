@@ -351,6 +351,7 @@ def build_system_prompt(settings: Settings) -> str:
         "- If user asks for help => intent='help'.\n"
         "- If user asks to list movements => intent='list'.\n"
         "- If user asks for monthly summary => intent='summary'.\n\n"
+        "- If user asks to download/export transactions => intent='download'.\n\n"
         "Type:\n"
         "- type: 'expense' or 'income'.\n"
         "- If verbs like \"me pagaron\", \"recibi\", \"reembolso\" => type='income'.\n"

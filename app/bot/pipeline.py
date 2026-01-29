@@ -130,14 +130,15 @@ class CommandFlow:
     async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
-        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_HELP])
+        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
         return self.pipeline._make_message(format_list_message(txs), keyboard)
 
-    async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
+    async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int], channel: str) -> BotMessage:
         logger.info("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
-        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_HELP])
-        return self.pipeline._make_message(format_summary_message(txs), keyboard)
+        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_DOWNLOAD, ACTION_HELP])
+        compact = channel in {"evolution", "whatsapp"}
+        return self.pipeline._make_message(format_summary_message(txs, compact=compact), keyboard)
 
     async def handle_download(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Download command chat_id=%s user_id=%s", chat_id, user.get("userId"))
@@ -199,20 +200,22 @@ class AiFlow:
 
         intent = str(tx.get("intent", "add_tx")).lower()
         if intent == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
         if intent == "list":
             return await self.pipeline.command_flow.handle_list(user, chat_id)
         if intent == "summary":
-            return await self.pipeline.command_flow.handle_summary(user, chat_id)
+            return await self.pipeline.command_flow.handle_summary(user, chat_id, source)
+        if intent == "download":
+            return await self.pipeline.command_flow.handle_download(user, chat_id)
 
         if intent != "add_tx":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
 
         if float(tx.get("amount", 0)) <= 0 or not str(tx.get("category")):
             logger.warning("AI invalid tx chat_id=%s user_id=%s", chat_id, user.get("userId"))
-            keyboard = _kb([ACTION_HELP])
+            keyboard = _kb([ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(INVALID_TX_MESSAGE, keyboard)
 
         tx_id = generate_tx_id()
@@ -283,7 +286,7 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY, ACTION_DOWNLOAD])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route == "non_text":
@@ -309,7 +312,7 @@ class BotPipeline(PipelineBase):
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
         if command.route == "summary":
-            return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
+            return [await self.command_flow.handle_summary(auth_result.user, chat_id, request.channel)]
         if command.route == "download":
             return [await self.command_flow.handle_download(auth_result.user, chat_id)]
         if command.route == "undo":
@@ -344,7 +347,7 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY, ACTION_DOWNLOAD])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route in {"list", "summary", "download", "undo", "ai"}:
@@ -365,7 +368,7 @@ class BotPipeline(PipelineBase):
             if command.route == "list":
                 return [await self.command_flow.handle_list(auth_result.user, chat_id)]
             elif command.route == "summary":
-                return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
+                return [await self.command_flow.handle_summary(auth_result.user, chat_id, request.channel)]
             elif command.route == "download":
                 return [await self.command_flow.handle_download(auth_result.user, chat_id)]
             elif command.route == "undo":
