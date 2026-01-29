@@ -102,6 +102,8 @@ def parse_command(
         route = "list"
     elif first_token == "/summary":
         route = "summary"
+    elif first_token in {"/download", "/descargar"}:
+        route = "download"
     elif first_token == "/undo":
         route = "undo"
 

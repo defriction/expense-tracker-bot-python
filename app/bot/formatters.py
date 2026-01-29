@@ -22,6 +22,7 @@ HELP_MESSAGE = (
     "<b>Comandos</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
+    "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
     "• <code>/start TU-TOKEN</code> activar cuenta\n\n"
     "<b>Notas</b>\n"

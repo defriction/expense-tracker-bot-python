@@ -15,6 +15,7 @@ from app.bot.formatters import (
     format_summary_message,
     format_undo_message,
 )
+from app.bot.exporters import build_transactions_xlsx
 from app.bot.parser import (
     build_system_prompt,
     generate_tx_id,
@@ -36,6 +37,7 @@ ACTION_LIST = BotAction("/list", "🧾 Movimientos")
 ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
 ACTION_UNDO = BotAction("/undo", "↩️ Deshacer")
 ACTION_HELP = BotAction("/help", "ℹ️ Ayuda")
+ACTION_DOWNLOAD = BotAction("/download", "⬇️ Descargar")
 
 
 def _kb(*rows: list[BotAction]) -> BotKeyboard:
@@ -58,8 +60,23 @@ class PipelineBase:
             raise RuntimeError("Groq client not configured")
         return self._groq
 
-    def _make_message(self, text: str, keyboard: Optional[BotKeyboard] = None) -> BotMessage:
-        return BotMessage(text=text, keyboard=keyboard, disable_web_preview=True)
+    def _make_message(
+        self,
+        text: str,
+        keyboard: Optional[BotKeyboard] = None,
+        *,
+        document_bytes: Optional[bytes] = None,
+        document_name: Optional[str] = None,
+        document_mime: Optional[str] = None,
+    ) -> BotMessage:
+        return BotMessage(
+            text=text,
+            keyboard=keyboard,
+            disable_web_preview=True,
+            document_bytes=document_bytes,
+            document_name=document_name,
+            document_mime=document_mime,
+        )
 
 
 @dataclass
@@ -121,6 +138,25 @@ class CommandFlow:
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_HELP])
         return self.pipeline._make_message(format_summary_message(txs), keyboard)
+
+    async def handle_download(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
+        logger.info("Download command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
+        txs = [tx for tx in txs if not tx.get("isDeleted")]
+        if not txs:
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            return self.pipeline._make_message("📭 <b>Sin movimientos</b>\nNo hay transacciones para descargar.", keyboard)
+
+        document_bytes, filename = build_transactions_xlsx(txs, self.pipeline.settings.timezone or "America/Bogota")
+        text = f"📎 <b>Exportación lista</b>\nTransacciones: <b>{len(txs)}</b>"
+        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        return self.pipeline._make_message(
+            text,
+            keyboard,
+            document_bytes=document_bytes,
+            document_name=filename,
+            document_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     async def handle_undo(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Undo command chat_id=%s user_id=%s", chat_id, user.get("userId"))
@@ -247,7 +283,7 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY, ACTION_DOWNLOAD])
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route == "non_text":
@@ -274,6 +310,8 @@ class BotPipeline(PipelineBase):
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
         if command.route == "summary":
             return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
+        if command.route == "download":
+            return [await self.command_flow.handle_download(auth_result.user, chat_id)]
         if command.route == "undo":
             return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
 
@@ -306,10 +344,10 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY, ACTION_DOWNLOAD])
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
-        if command.route in {"list", "summary", "undo", "ai"}:
+        if command.route in {"list", "summary", "download", "undo", "ai"}:
             auth_result = self.auth_flow.require_active_user(
                 request.channel,
                 str(external_user_id) if external_user_id is not None else None,
@@ -328,6 +366,8 @@ class BotPipeline(PipelineBase):
                 return [await self.command_flow.handle_list(auth_result.user, chat_id)]
             elif command.route == "summary":
                 return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
+            elif command.route == "download":
+                return [await self.command_flow.handle_download(auth_result.user, chat_id)]
             elif command.route == "undo":
                 return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
             else:

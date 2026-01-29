@@ -69,6 +69,29 @@ class EvolutionClient:
         }
         return await self._post(f"message/sendText/{self.instance_name}", payload)
 
+    async def send_media(
+        self,
+        to: str,
+        *,
+        mediatype: str,
+        mimetype: Optional[str],
+        media: str,
+        file_name: Optional[str] = None,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "number": to,
+            "mediatype": mediatype,
+            "media": media,
+        }
+        if mimetype:
+            payload["mimetype"] = mimetype
+        if file_name:
+            payload["fileName"] = file_name
+        if caption:
+            payload["caption"] = caption
+        return await self._post(f"message/sendMedia/{self.instance_name}", payload)
+
     async def send_poll(
         self,
         to: str,

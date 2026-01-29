@@ -20,6 +20,9 @@ class BotMessage:
     text: str
     keyboard: Optional[BotKeyboard] = None
     disable_web_preview: bool = True
+    document_bytes: Optional[bytes] = None
+    document_name: Optional[str] = None
+    document_mime: Optional[str] = None
 
 
 @dataclass(frozen=True)

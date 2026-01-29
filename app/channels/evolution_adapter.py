@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import re
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,9 @@ def html_to_whatsapp(text: str) -> str:
     # line breaks
     s = s.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
 
+    # preformatted blocks
+    s = re.sub(r"</?pre>", "```", s, flags=re.IGNORECASE)
+
     # bold / italic
     s = re.sub(r"</?b>", "*", s, flags=re.IGNORECASE)
     s = re.sub(r"</?strong>", "*", s, flags=re.IGNORECASE)
@@ -32,7 +36,7 @@ def html_to_whatsapp(text: str) -> str:
     # remove any remaining tags
     s = re.sub(r"<[^>]+>", "", s)
 
-    return s
+    return html.unescape(s)
 
 
 def _safe_str(v: Any) -> str:
@@ -123,6 +127,21 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         return
 
     text = html_to_whatsapp(message.text)
+
+    if message.document_bytes:
+        media_b64 = base64.b64encode(message.document_bytes).decode("utf-8")
+        try:
+            await client.send_media(
+                to,
+                mediatype="document",
+                mimetype=message.document_mime,
+                media=media_b64,
+                file_name=message.document_name,
+                caption=text,
+            )
+            return
+        except httpx.HTTPError:
+            pass
 
     if message.keyboard and message.keyboard.rows:
         rows = _rows_from_keyboard(message)
