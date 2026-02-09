@@ -214,7 +214,7 @@ def normalize_ai_response(
         "type": _norm_str(parsed.get("type", "expense")).lower(),
         "transactionKind": _norm_str(parsed.get("transactionKind", "regular")).lower(),
         "amount": _safe_float(parsed.get("amount", 0), 0),
-        "currency": _norm_str(parsed.get("currency", "COP")).upper(),
+        "currency": "COP",
         "category": _norm_str(parsed.get("category", "misc")).lower(),
         "description": _norm_str(parsed.get("description", "")),
         "date": _norm_str(parsed.get("date", "")),
@@ -314,7 +314,7 @@ def normalize_types(tx: Dict[str, Any]) -> Dict[str, Any]:
 
     tx["type"] = str(tx.get("type", "expense"))
     tx["transactionKind"] = str(tx.get("transactionKind", "regular"))
-    tx["currency"] = str(tx.get("currency", "COP"))
+    tx["currency"] = "COP"
     tx["category"] = str(tx.get("category", ""))
     tx["description"] = str(tx.get("description", ""))
 
@@ -341,7 +341,7 @@ def build_system_prompt(settings: Settings) -> str:
         "You are a financial assistant. Extract structured data from a single user message.\n\n"
         "Return JSON ONLY. No markdown, no backticks.\n\n"
         "General rules:\n"
-        "- Default currency is COP.\n"
+        "- Currency is always COP (ignore any other currency).\n"
         "- paymentMethod defaults to 'cash' when unspecified.\n"
         "- Date must be YYYY-MM-DD. Use Current Date (America/Bogota) when user did not specify a date.\n"
         "- Relative time: interpret \"anoche\" as yesterday's date (America/Bogota).\n"

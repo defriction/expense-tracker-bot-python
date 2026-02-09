@@ -1,7 +1,8 @@
 services:
   expense-tracker-bot:
+    image: ${IMAGE_NAME:-expense-tracker-bot:latest}
     build: .
-    container_name: expense-tracker-bot
+    container_name: ${CONTAINER_NAME:-expense-tracker-bot}
     restart: always
     env_file:
       - .env
@@ -12,13 +13,13 @@ services:
       - internal
     labels:
       - traefik.enable=true
-      - traefik.http.routers.expense-bot.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`/expense/v1`)
-      - traefik.http.routers.expense-bot.entrypoints=websecure
-      - traefik.http.routers.expense-bot.tls=true
-      - traefik.http.routers.expense-bot.tls.certresolver=mytlschallenge
-      - traefik.http.services.expense-bot.loadbalancer.server.port=8000
-      - traefik.http.middlewares.expense-strip.stripprefix.prefixes=/expense/v1
-      - traefik.http.routers.expense-bot.middlewares=expense-strip@docker
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot}.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`${TRAEFIK_PATH_PREFIX:-/expense/v1}`)
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot}.entrypoints=websecure
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot}.tls=true
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot}.tls.certresolver=mytlschallenge
+      - traefik.http.services.${TRAEFIK_ROUTER_NAME:-expense-bot}.loadbalancer.server.port=8000
+      - traefik.http.middlewares.${TRAEFIK_MIDDLEWARE_NAME:-expense-strip}.stripprefix.prefixes=${TRAEFIK_PATH_PREFIX:-/expense/v1}
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot}.middlewares=${TRAEFIK_MIDDLEWARE_NAME:-expense-strip}@docker
       - traefik.docker.network=proxy
 
 networks:
