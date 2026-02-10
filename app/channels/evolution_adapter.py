@@ -120,6 +120,7 @@ def _commands_fallback(text: str, rows: List[Dict[str, str]]) -> str:
 
 async def send_evolution_message(client: EvolutionClient, to: str, message: BotMessage) -> None:
     if not to:
+        logger.info("EV send skipped reason=missing_to")
         return
 
     if to.endswith("@lid"):
@@ -127,6 +128,8 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         return
 
     text = html_to_whatsapp(message.text)
+
+    logger.info("EV send start to=%s has_keyboard=%s text_len=%s", to, bool(message.keyboard), len(message.text or ""))
 
     if message.document_bytes:
         media_b64 = base64.b64encode(message.document_bytes).decode("utf-8")
@@ -139,9 +142,11 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
                 file_name=message.document_name,
                 caption=text,
             )
+            logger.info("EV send ok to=%s kind=document", to)
             return
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as exc:
+            logger.warning("EV send failed to=%s kind=document error=%s", to, exc)
+            return
 
     if message.keyboard and message.keyboard.rows:
         rows = _rows_from_keyboard(message)
@@ -149,9 +154,11 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         if len(rows) < 2:
             try:
                 await client.send_text(to, text, link_preview=False)
-            except httpx.HTTPError:
+                logger.info("EV send ok to=%s kind=text", to)
                 return
-            return
+            except httpx.HTTPError as exc:
+                logger.warning("EV send failed to=%s kind=text error=%s", to, exc)
+                return
 
         # Disable inline buttons
         #sections = [{"title": "Opciones", "rows": rows}]
@@ -171,13 +178,17 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         fallback = _commands_fallback(text, rows)
         try:
             await client.send_text(to, fallback, link_preview=False)
-        except httpx.HTTPError:
+            logger.info("EV send ok to=%s kind=text", to)
             return
-        return
+        except httpx.HTTPError as exc:
+            logger.warning("EV send failed to=%s kind=text error=%s", to, exc)
+            return
 
     try:
         await client.send_text(to, text, link_preview=False)
-    except httpx.HTTPError:
+        logger.info("EV send ok to=%s kind=text", to)
+    except httpx.HTTPError as exc:
+        logger.warning("EV send failed to=%s kind=text error=%s", to, exc)
         return
 
 

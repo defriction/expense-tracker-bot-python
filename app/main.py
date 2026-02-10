@@ -1,5 +1,6 @@
 ﻿from fastapi import FastAPI
 from app.core.config import load_settings
+from app.core.logging import setup_logging
 from app.bot.handlers import error_handler, get_handlers, PipelineFactory
 from app.routers.telegram import build_telegram_router
 from app.services.telegram import build_telegram_app
@@ -20,6 +21,7 @@ app.include_router(build_evolution_router(pipeline, evolution_client, settings))
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    setup_logging()
     await telegram_app.initialize()
 
 
