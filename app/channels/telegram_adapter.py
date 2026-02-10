@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ContextTypes
 
 from app.bot.ui_models import BotKeyboard, BotMessage
@@ -12,6 +13,18 @@ async def send_bot_message(context: ContextTypes.DEFAULT_TYPE, chat_id: Optional
     if not chat_id:
         return
     keyboard = _build_keyboard(message.keyboard)
+    if message.document_bytes:
+        buffer = BytesIO(message.document_bytes)
+        filename = message.document_name or "archivo.xlsx"
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=InputFile(buffer, filename=filename),
+            caption=message.text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return
+
     await context.bot.send_message(
         chat_id=chat_id,
         text=message.text,

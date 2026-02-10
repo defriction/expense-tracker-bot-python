@@ -15,6 +15,7 @@ from app.bot.formatters import (
     format_summary_message,
     format_undo_message,
 )
+from app.bot.exporters import build_transactions_xlsx
 from app.bot.parser import (
     build_system_prompt,
     generate_tx_id,
@@ -36,6 +37,7 @@ ACTION_LIST = BotAction("/list", "🧾 Movimientos")
 ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
 ACTION_UNDO = BotAction("/undo", "↩️ Deshacer")
 ACTION_HELP = BotAction("/help", "ℹ️ Ayuda")
+ACTION_DOWNLOAD = BotAction("/download", "⬇️ Descargar")
 
 
 def _kb(*rows: list[BotAction]) -> BotKeyboard:
@@ -58,8 +60,23 @@ class PipelineBase:
             raise RuntimeError("Groq client not configured")
         return self._groq
 
-    def _make_message(self, text: str, keyboard: Optional[BotKeyboard] = None) -> BotMessage:
-        return BotMessage(text=text, keyboard=keyboard, disable_web_preview=True)
+    def _make_message(
+        self,
+        text: str,
+        keyboard: Optional[BotKeyboard] = None,
+        *,
+        document_bytes: Optional[bytes] = None,
+        document_name: Optional[str] = None,
+        document_mime: Optional[str] = None,
+    ) -> BotMessage:
+        return BotMessage(
+            text=text,
+            keyboard=keyboard,
+            disable_web_preview=True,
+            document_bytes=document_bytes,
+            document_name=document_name,
+            document_mime=document_mime,
+        )
 
 
 @dataclass
@@ -113,14 +130,34 @@ class CommandFlow:
     async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
-        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_HELP])
+        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
         return self.pipeline._make_message(format_list_message(txs), keyboard)
 
-    async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
+    async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int], channel: str) -> BotMessage:
         logger.info("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
-        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_HELP])
-        return self.pipeline._make_message(format_summary_message(txs), keyboard)
+        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_DOWNLOAD, ACTION_HELP])
+        compact = channel in {"evolution", "whatsapp"}
+        return self.pipeline._make_message(format_summary_message(txs, compact=compact), keyboard)
+
+    async def handle_download(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
+        logger.info("Download command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
+        txs = [tx for tx in txs if not tx.get("isDeleted")]
+        if not txs:
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            return self.pipeline._make_message("📭 <b>Sin movimientos</b>\nNo hay transacciones para descargar.", keyboard)
+
+        document_bytes, filename = build_transactions_xlsx(txs, self.pipeline.settings.timezone or "America/Bogota")
+        text = f"📎 <b>Exportación lista</b>\nTransacciones: <b>{len(txs)}</b>"
+        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        return self.pipeline._make_message(
+            text,
+            keyboard,
+            document_bytes=document_bytes,
+            document_name=filename,
+            document_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     async def handle_undo(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Undo command chat_id=%s user_id=%s", chat_id, user.get("userId"))
@@ -163,20 +200,22 @@ class AiFlow:
 
         intent = str(tx.get("intent", "add_tx")).lower()
         if intent == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
         if intent == "list":
             return await self.pipeline.command_flow.handle_list(user, chat_id)
         if intent == "summary":
-            return await self.pipeline.command_flow.handle_summary(user, chat_id)
+            return await self.pipeline.command_flow.handle_summary(user, chat_id, source)
+        if intent == "download":
+            return await self.pipeline.command_flow.handle_download(user, chat_id)
 
         if intent != "add_tx":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
 
         if float(tx.get("amount", 0)) <= 0 or not str(tx.get("category")):
             logger.warning("AI invalid tx chat_id=%s user_id=%s", chat_id, user.get("userId"))
-            keyboard = _kb([ACTION_HELP])
+            keyboard = _kb([ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(INVALID_TX_MESSAGE, keyboard)
 
         tx_id = generate_tx_id()
@@ -247,7 +286,7 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route == "non_text":
@@ -273,7 +312,9 @@ class BotPipeline(PipelineBase):
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
         if command.route == "summary":
-            return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
+            return [await self.command_flow.handle_summary(auth_result.user, chat_id, request.channel)]
+        if command.route == "download":
+            return [await self.command_flow.handle_download(auth_result.user, chat_id)]
         if command.route == "undo":
             return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
 
@@ -306,10 +347,10 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
-        if command.route in {"list", "summary", "undo", "ai"}:
+        if command.route in {"list", "summary", "download", "undo", "ai"}:
             auth_result = self.auth_flow.require_active_user(
                 request.channel,
                 str(external_user_id) if external_user_id is not None else None,
@@ -327,7 +368,9 @@ class BotPipeline(PipelineBase):
             if command.route == "list":
                 return [await self.command_flow.handle_list(auth_result.user, chat_id)]
             elif command.route == "summary":
-                return [await self.command_flow.handle_summary(auth_result.user, chat_id)]
+                return [await self.command_flow.handle_summary(auth_result.user, chat_id, request.channel)]
+            elif command.route == "download":
+                return [await self.command_flow.handle_download(auth_result.user, chat_id)]
             elif command.route == "undo":
                 return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
             else:
@@ -354,24 +397,21 @@ class BotPipeline(PipelineBase):
 
     @staticmethod
     def _pick_latest(transactions: list[Dict[str, Any]]) -> Dict[str, Any]:
-        def to_ts(item: Dict[str, Any]) -> float:
-            date_value = str(item.get("date") or "")
-            if date_value and len(date_value) == 10:
-                try:
-                    return __import__('datetime').datetime.fromisoformat(date_value + "T00:00:00+00:00").timestamp()
-                except ValueError:
-                    pass
-            created_at = str(item.get("createdAt") or "")
-            try:
-                return __import__('datetime').datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                return float("-inf")
-
-        valid = [tx for tx in transactions if tx.get("txId")]
+        valid = [tx for tx in transactions if tx.get("txId") and not tx.get("isDeleted")]
         if not valid:
             return {"ok": False, "reason": "no_tx"}
 
-        valid.sort(key=to_ts, reverse=True)
+        def created_ts(item: Dict[str, Any]) -> float:
+            created_at = str(item.get("createdAt") or "")
+            try:
+                return __import__("datetime").datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                try:
+                    return float(str(item.get("txId") or "0").replace("TX-", ""))
+                except ValueError:
+                    return float("-inf")
+
+        valid.sort(key=created_ts, reverse=True)
         tx = valid[0]
         return {
             "ok": True,

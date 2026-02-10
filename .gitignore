@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 n8n
 ROADMAP.md
+.idea
