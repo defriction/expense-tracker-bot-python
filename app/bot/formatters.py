@@ -22,6 +22,7 @@ HELP_MESSAGE = (
     "<b>Comandos</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
+    "• <code>/recurrentes</code> ver recurrentes\n"
     "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
     "• <code>/start TU-TOKEN</code> activar cuenta\n\n"
@@ -160,6 +161,31 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
             message.append(f"<code>{date}</code>")
         message.append("")
 
+    return "\n".join(message).strip()
+
+
+def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
+    if not items:
+        return "📭 <b>Sin recurrentes</b>\nNo tienes gastos recurrentes."
+
+    message = [
+        "🔁 <b>Recurrentes</b>",
+        "",
+    ]
+    for item in items:
+        rid = item.get("id")
+        amount = format_currency(float(item.get("amount", 0)), str(item.get("currency", "COP")))
+        merchant = escape_html(str(item.get("normalized_merchant") or item.get("description") or "Gasto recurrente"))
+        recurrence = escape_html(str(item.get("recurrence") or "monthly"))
+        status = escape_html(str(item.get("status") or "pending"))
+        next_due = escape_html(str(item.get("next_due") or "—"))
+        message.append(f"<b>ID:</b> <code>{rid}</code> · <b>{amount}</b>")
+        message.append(f"{merchant} · {recurrence} · <b>{status}</b>")
+        message.append(f"Vence: <code>{next_due}</code>")
+        message.append("")
+
+    message.append("Para editar recordatorios: <code>recordatorios ID 3,1,0</code>")
+    message.append("Para pausar/activar: <code>pausar ID</code> / <code>activar ID</code>")
     return "\n".join(message).strip()
 
 

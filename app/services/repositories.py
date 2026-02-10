@@ -30,6 +30,34 @@ class DataRepo(Protocol):
 
     def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None: ...
 
+    def find_recurring_by_recurrence_id(self, user_id: str, recurrence_id: str) -> Optional[Dict[str, Any]]: ...
+
+    def create_recurring_expense(self, data: Dict[str, Any]) -> Dict[str, Any]: ...
+
+    def get_recurring_expense(self, recurring_id: int) -> Optional[Dict[str, Any]]: ...
+
+    def update_recurring_expense(self, recurring_id: int, updates: Dict[str, Any]) -> None: ...
+
+    def list_active_recurring_expenses(self) -> list[Dict[str, Any]]: ...
+
+    def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]: ...
+
+    def create_recurring_event_if_missing(
+        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    ) -> Optional[int]: ...
+
+    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None: ...
+
+    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]: ...
+
+    def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]: ...
+
+    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]: ...
+
+    def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]: ...
+
+    def delete_pending_action(self, pending_id: int) -> None: ...
+
 
 @dataclass
 class CompositeRepo:
@@ -74,6 +102,47 @@ class CompositeRepo:
         self.primary.append_error_log(workflow, node, message, user_id, chat_id)
         for writer in self.secondary_writers:
             _safe_call(lambda: writer.append_error_log(workflow, node, message, user_id, chat_id))
+
+    def find_recurring_by_recurrence_id(self, user_id: str, recurrence_id: str) -> Optional[Dict[str, Any]]:
+        return self.primary.find_recurring_by_recurrence_id(user_id, recurrence_id)
+
+    def create_recurring_expense(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.primary.create_recurring_expense(data)
+
+    def get_recurring_expense(self, recurring_id: int) -> Optional[Dict[str, Any]]:
+        return self.primary.get_recurring_expense(recurring_id)
+
+    def update_recurring_expense(self, recurring_id: int, updates: Dict[str, Any]) -> None:
+        return self.primary.update_recurring_expense(recurring_id, updates)
+
+    def list_active_recurring_expenses(self) -> list[Dict[str, Any]]:
+        return self.primary.list_active_recurring_expenses()
+
+    def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]:
+        return self.primary.list_recurring_expenses(user_id)
+
+    def create_recurring_event_if_missing(
+        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    ) -> Optional[int]:
+        return self.primary.create_recurring_event_if_missing(recurring_id, reminder_date, reminder_offset, due_date)
+
+    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None:
+        return self.primary.update_recurring_event(event_id, updates)
+
+    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+        return self.primary.get_recurring_event(event_id)
+
+    def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
+        return self.primary.get_user_chat_id(user_id, channel)
+
+    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        return self.primary.upsert_pending_action(user_id, action_type, state)
+
+    def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]:
+        return self.primary.get_pending_action(user_id, action_type)
+
+    def delete_pending_action(self, pending_id: int) -> None:
+        return self.primary.delete_pending_action(pending_id)
 
 
 def _safe_call(fn) -> None:

@@ -90,6 +90,8 @@ def parse_command(
 
     route = "ai"
     invite_token = ""
+    if clean.lower().startswith("recurring:"):
+        route = "recurring_action"
     if first_token == "/start":
         if args:
             route = "onboarding"
@@ -102,10 +104,20 @@ def parse_command(
         route = "list"
     elif first_token == "/summary":
         route = "summary"
+    elif first_token == "/recurrentes":
+        route = "recurrings"
     elif first_token in {"/download", "/descargar"}:
         route = "download"
     elif first_token == "/undo":
         route = "undo"
+    else:
+        lower = clean.lower()
+        if lower.startswith("recordatorios "):
+            route = "recurring_edit"
+        elif lower.startswith("pausar "):
+            route = "recurring_toggle"
+        elif lower.startswith("activar "):
+            route = "recurring_toggle"
 
     return ParsedCommand(
         route=route,
@@ -272,7 +284,7 @@ def normalize_ai_response(
         tx["loanId"] = ""
 
     if tx["isRecurring"]:
-        if tx["recurrence"] not in {"weekly", "biweekly", "monthly", "yearly"}:
+        if tx["recurrence"] not in {"weekly", "biweekly", "monthly", "quarterly", "yearly"}:
             tx["recurrence"] = "monthly"
         if not tx["recurrenceId"]:
             tx["recurrenceId"] = _stable_id("REC", tx["normalizedMerchant"] or tx["description"] or tx["category"])
@@ -365,8 +377,8 @@ def build_system_prompt(settings: Settings) -> str:
         "- loanRole: 'lent' | 'borrowed' | 'repayment'.\n"
         "- loanId: stable id like 'LOAN:<COUNTERPARTY>' when possible.\n\n"
         "Recurring:\n"
-        "- isRecurring: true if periodic payment is indicated (mensual, cada mes, semanal, anual, suscripción, cada quincena).\n"
-        "- recurrence: 'weekly'|'biweekly'|'monthly'|'yearly' when isRecurring=true.\n"
+        "- isRecurring: true if periodic payment is indicated (mensual, cada mes, semanal, trimestral, anual, suscripción, cada quincena).\n"
+        "- recurrence: 'weekly'|'biweekly'|'monthly'|'quarterly'|'yearly' when isRecurring=true.\n"
         "- recurrenceId: stable id like 'REC:<NORMALIZED_MERCHANT>'.\n\n"
         "Categories (choose ONE, avoid 'misc' unless nothing fits):\n"
         "- food_home (pan, café, snacks, mercado, supermercado, D1, Ara, Éxito)\n"

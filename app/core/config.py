@@ -19,6 +19,7 @@ class Settings:
     evolution_api_url: Optional[str] = None
     evolution_api_key: Optional[str] = None
     evolution_instance_name: Optional[str] = None
+    db_schema: Optional[str] = None
     max_input_chars: int = 1200
     max_output_tokens: int = 400
     rate_limit_per_user_per_min: int = 60
@@ -65,6 +66,7 @@ def load_settings() -> Settings:
         evolution_api_url=_get_env("EVOLUTION_API_URL"),
         evolution_api_key=_get_env("EVOLUTION_API_KEY"),
         evolution_instance_name=_get_env("EVOLUTION_INSTANCE_NAME"),
+        db_schema=_get_env("DB_SCHEMA"),
         max_input_chars=_get_int_env("MAX_INPUT_CHARS", 1200),
         max_output_tokens=_get_int_env("GROQ_MAX_OUTPUT_TOKENS", 400),
         rate_limit_per_user_per_min=_get_int_env("RATE_LIMIT_USER_PER_MIN", 60),

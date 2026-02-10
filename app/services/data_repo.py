@@ -13,7 +13,10 @@ def build_data_repo(settings: Settings) -> DataRepo:
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required")
 
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    connect_args = {}
+    if settings.db_schema:
+        connect_args["options"] = f"-csearch_path={settings.db_schema}"
+    engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
     primary = ResilientPostgresRepo(PostgresRepo(engine))
     secondary_writers = []
     if settings.google_service_account_json or settings.google_service_account_file:

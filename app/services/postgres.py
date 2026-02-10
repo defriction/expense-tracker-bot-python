@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+import json
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -290,6 +291,212 @@ class PostgresRepo:
             )
             session.commit()
 
+    def find_recurring_by_recurrence_id(self, user_id: str, recurrence_id: str) -> Optional[Dict[str, Any]]:
+        sql = text(
+            """
+            select * from recurring_expenses
+            where user_id = :user_id and recurrence_id = :recurrence_id
+            """
+        )
+        with self._session() as session:
+            row = session.execute(sql, {"user_id": user_id, "recurrence_id": recurrence_id}).mappings().first()
+            return dict(row) if row else None
+
+    def create_recurring_expense(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        now = self._now_iso()
+        params = {
+            "user_id": data.get("user_id"),
+            "recurrence_id": data.get("recurrence_id"),
+            "normalized_merchant": data.get("normalized_merchant"),
+            "description": data.get("description"),
+            "category": data.get("category"),
+            "amount": data.get("amount"),
+            "currency": data.get("currency"),
+            "recurrence": data.get("recurrence"),
+            "billing_day": data.get("billing_day"),
+            "billing_weekday": data.get("billing_weekday"),
+            "billing_month": data.get("billing_month"),
+            "anchor_date": data.get("anchor_date"),
+            "timezone": data.get("timezone") or "America/Bogota",
+            "payment_link": data.get("payment_link"),
+            "payment_reference": data.get("payment_reference"),
+            "remind_offsets": json.dumps(data.get("remind_offsets") or [3, 1]),
+            "next_due": data.get("next_due"),
+            "status": data.get("status") or "pending",
+            "source_tx_id": data.get("source_tx_id"),
+            "created_at": data.get("created_at") or now,
+            "updated_at": data.get("updated_at") or now,
+        }
+        with self._session() as session:
+            row = session.execute(
+                text(
+                    """
+                    insert into recurring_expenses (
+                        user_id, recurrence_id, normalized_merchant, description, category, amount, currency,
+                        recurrence, billing_day, billing_weekday, billing_month, anchor_date, timezone, payment_link,
+                        payment_reference, remind_offsets, next_due, status, source_tx_id, created_at, updated_at
+                    ) values (
+                        :user_id, :recurrence_id, :normalized_merchant, :description, :category, :amount, :currency,
+                        :recurrence, :billing_day, :billing_weekday, :billing_month, :anchor_date, :timezone, :payment_link,
+                        :payment_reference, cast(:remind_offsets as jsonb), :next_due, :status, :source_tx_id, :created_at, :updated_at
+                    )
+                    returning *
+                    """
+                ),
+                params,
+            ).mappings().first()
+            session.commit()
+            return dict(row)
+
+    def get_recurring_expense(self, recurring_id: int) -> Optional[Dict[str, Any]]:
+        with self._session() as session:
+            row = session.execute(
+                text("select * from recurring_expenses where id = :id"),
+                {"id": recurring_id},
+            ).mappings().first()
+            return dict(row) if row else None
+
+    def update_recurring_expense(self, recurring_id: int, updates: Dict[str, Any]) -> None:
+        if not updates:
+            return
+        updates = dict(updates)
+        if "remind_offsets" in updates and not isinstance(updates["remind_offsets"], str):
+            updates["remind_offsets"] = json.dumps(updates["remind_offsets"])
+        updates["updated_at"] = updates.get("updated_at") or self._now_iso()
+        fields = []
+        for key in updates.keys():
+            if key == "remind_offsets":
+                fields.append("remind_offsets = cast(:remind_offsets as jsonb)")
+            else:
+                fields.append(f"{key} = :{key}")
+        sql = text(f"update recurring_expenses set {', '.join(fields)} where id = :id")
+        updates["id"] = recurring_id
+        with self._session() as session:
+            session.execute(sql, updates)
+            session.commit()
+
+    def list_active_recurring_expenses(self) -> list[Dict[str, Any]]:
+        sql = text("select * from recurring_expenses where status = 'active'")
+        with self._session() as session:
+            rows = session.execute(sql).mappings().all()
+            return [dict(row) for row in rows]
+
+    def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]:
+        sql = text(
+            """
+            select * from recurring_expenses
+            where user_id = :user_id
+            order by created_at desc
+            """
+        )
+        with self._session() as session:
+            rows = session.execute(sql, {"user_id": user_id}).mappings().all()
+            return [dict(row) for row in rows]
+
+    def create_recurring_event_if_missing(
+        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    ) -> Optional[int]:
+        now = self._now_iso()
+        with self._session() as session:
+            row = session.execute(
+                text(
+                    """
+                    insert into recurring_events (
+                        recurring_id, reminder_date, reminder_offset, due_date, status, created_at, updated_at
+                    ) values (
+                        :recurring_id, :reminder_date, :reminder_offset, :due_date, 'pending', :now, :now
+                    )
+                    on conflict (recurring_id, reminder_date, reminder_offset) do nothing
+                    returning id
+                    """
+                ),
+                {
+                    "recurring_id": recurring_id,
+                    "reminder_date": reminder_date,
+                    "reminder_offset": reminder_offset,
+                    "due_date": due_date,
+                    "now": now,
+                },
+            ).scalar()
+            session.commit()
+            return int(row) if row else None
+
+    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None:
+        if not updates:
+            return
+        updates = dict(updates)
+        updates["updated_at"] = updates.get("updated_at") or self._now_iso()
+        fields = []
+        for key in updates.keys():
+            fields.append(f"{key} = :{key}")
+        sql = text(f"update recurring_events set {', '.join(fields)} where id = :id")
+        updates["id"] = event_id
+        with self._session() as session:
+            session.execute(sql, updates)
+            session.commit()
+
+    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+        sql = text(
+            """
+            select e.*, r.user_id, r.amount, r.currency, r.category, r.description,
+                   r.normalized_merchant, r.recurrence, r.recurrence_id
+            from recurring_events e
+            join recurring_expenses r on r.id = e.recurring_id
+            where e.id = :event_id
+            """
+        )
+        with self._session() as session:
+            row = session.execute(sql, {"event_id": event_id}).mappings().first()
+            return dict(row) if row else None
+
+    def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
+        sql = text(
+            """
+            select external_chat_id
+            from user_identities
+            where user_id = :user_id and channel = :channel
+            order by id desc
+            limit 1
+            """
+        )
+        with self._session() as session:
+            row = session.execute(sql, {"user_id": user_id, "channel": channel}).mappings().first()
+            return row["external_chat_id"] if row else None
+
+    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        now = self._now_iso()
+        with self._session() as session:
+            row = session.execute(
+                text(
+                    """
+                    insert into bot_pending_actions (user_id, action_type, state, created_at, updated_at)
+                    values (:user_id, :action_type, cast(:state as jsonb), :now, :now)
+                    on conflict (user_id, action_type)
+                    do update set state = excluded.state, updated_at = excluded.updated_at
+                    returning *
+                    """
+                ),
+                {"user_id": user_id, "action_type": action_type, "state": json.dumps(state), "now": now},
+            ).mappings().first()
+            session.commit()
+            return dict(row)
+
+    def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]:
+        sql = text(
+            """
+            select * from bot_pending_actions
+            where user_id = :user_id and action_type = :action_type
+            """
+        )
+        with self._session() as session:
+            row = session.execute(sql, {"user_id": user_id, "action_type": action_type}).mappings().first()
+            return dict(row) if row else None
+
+    def delete_pending_action(self, pending_id: int) -> None:
+        with self._session() as session:
+            session.execute(text("delete from bot_pending_actions where id = :id"), {"id": pending_id})
+            session.commit()
+
 
 def ensure_database(engine: Engine) -> None:
     with engine.connect() as conn:
@@ -329,3 +536,44 @@ class ResilientPostgresRepo:
             return self.repo.append_error_log(workflow, node, message, user_id, chat_id)
         except Exception as exc:
             logger.warning("Failed to append error log to Postgres: %s", exc)
+
+    def find_recurring_by_recurrence_id(self, user_id: str, recurrence_id: str) -> Optional[Dict[str, Any]]:
+        return self.repo.find_recurring_by_recurrence_id(user_id, recurrence_id)
+
+    def create_recurring_expense(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.repo.create_recurring_expense(data)
+
+    def get_recurring_expense(self, recurring_id: int) -> Optional[Dict[str, Any]]:
+        return self.repo.get_recurring_expense(recurring_id)
+
+    def update_recurring_expense(self, recurring_id: int, updates: Dict[str, Any]) -> None:
+        return self.repo.update_recurring_expense(recurring_id, updates)
+
+    def list_active_recurring_expenses(self) -> list[Dict[str, Any]]:
+        return self.repo.list_active_recurring_expenses()
+
+    def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]:
+        return self.repo.list_recurring_expenses(user_id)
+
+    def create_recurring_event_if_missing(
+        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    ) -> Optional[int]:
+        return self.repo.create_recurring_event_if_missing(recurring_id, reminder_date, reminder_offset, due_date)
+
+    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None:
+        return self.repo.update_recurring_event(event_id, updates)
+
+    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+        return self.repo.get_recurring_event(event_id)
+
+    def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
+        return self.repo.get_user_chat_id(user_id, channel)
+
+    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        return self.repo.upsert_pending_action(user_id, action_type, state)
+
+    def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]:
+        return self.repo.get_pending_action(user_id, action_type)
+
+    def delete_pending_action(self, pending_id: int) -> None:
+        return self.repo.delete_pending_action(pending_id)
