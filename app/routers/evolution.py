@@ -24,6 +24,7 @@ def build_evolution_router(
     @router.post("/evolution/webhook")
     async def evolution_webhook(request: Request, apikey: Optional[str] = Header(None)):
         logger.info(">>>>>>>EV webhook started")
+
         ctx = _init_request_context(request)
         _safe_set_log_context(ctx)
 
@@ -33,22 +34,41 @@ def build_evolution_router(
             _log_unauthorized(ctx, apikey)
             return {"ok": False, "error": "unauthorized"}
 
-        data, json_ok = await _read_json_safely(request)
+        data, json_ok, body_hash = await _read_json_safely_with_hash(request)
         if not json_ok:
-            _log_invalid_json(ctx, request)
+            _log_invalid_json(ctx, request, body_hash)
             return {"ok": False, "error": "invalid_json"}
 
         event, raw_message = _extract_event_and_message(data)
-        logger.info("EV webhook start event=%s raw_message=%s", event, raw_message)
+        meta = _extract_meta(data)
 
+        # Log base SIEMPRE (esto es lo que te permite decir: "313/314 llegaron como update/upsert")
+        logger.info(
+            "EV webhook parsed event=%s body_hash=%s instanceId=%s remoteJid=%s key.id=%s msgTs=%s msgType=%s has_raw_message=%s",
+            event,
+            body_hash,
+            meta.get("instanceId"),
+            meta.get("remoteJid"),
+            meta.get("keyId"),
+            meta.get("messageTimestamp"),
+            meta.get("messageType"),
+            bool(raw_message),
+        )
+
+        # 🔎 Si es update, NO lo botes a ciegas: loguea resumen
         if event == "messages.update":
-            logger.debug("EV webhook update payload=%s", data)
+            _log_update_summary(data, meta)
             return {"ok": True}
 
         if event != "messages.upsert":
+            logger.info("EV webhook ignored event=%s", event)
             return {"ok": True}
 
-        bot_input = await _parse_bot_input(data, evolution_client, event)
+        # 🔎 Si es upsert pero raw_message None, casi seguro tu extractor no está leyendo la estructura real
+        if raw_message is None:
+            _log_upsert_missing_message(data, meta)
+
+        bot_input = await _parse_bot_input(data, evolution_client, event, meta, body_hash)
         if bot_input is None:
             return {"ok": True}
 
@@ -83,7 +103,6 @@ def _safe_trace_id() -> str:
     try:
         return f"tx-{uuid.uuid4().hex}"
     except Exception:
-        # ultra-safe fallback
         return f"tx-fallback-{int(time.time() * 1000)}"
 
 
@@ -93,30 +112,20 @@ def _safe_set_log_context(ctx: dict[str, str]) -> None:
         set_client_ip(ctx["client_host"])
         set_log_context("evolution", None, None, None)
     except Exception:
-        # never block webhook because logging context failed
         pass
 
 
 def _log_request_received(ctx: dict[str, str], apikey: Optional[str]) -> None:
     try:
-        apikey_present = bool(apikey)
-        content_length = "unknown"
-        # can't always access headers safely everywhere, so guard it
-        try:
-            content_length = ctx.get("content_length", "unknown")
-        except Exception:
-            pass
-
         logger.info(
             "EV webhook received trace_id=%s ip=%s method=%s path=%s apikey_present=%s",
             ctx["trace_id"],
             ctx["client_host"],
             ctx["method"],
             ctx["path"],
-            apikey_present,
+            bool(apikey),
         )
     except Exception:
-        # absolutely never let logging break request handling
         try:
             logger.info("EV webhook received (logging_error)")
         except Exception:
@@ -139,53 +148,39 @@ def _log_unauthorized(ctx: dict[str, str], apikey: Optional[str]) -> None:
         pass
 
 
-async def _read_json_safely(request: Request) -> Tuple[dict[str, Any], bool]:
+async def _read_json_safely_with_hash(request: Request) -> Tuple[dict[str, Any], bool, str]:
+    """
+    Lee request.json() y además calcula un hash del body para correlacionar retries/duplicados.
+    """
+    try:
+        raw = await request.body()
+        body_hash = hashlib.sha256(raw).hexdigest()[:12] if raw else "empty"
+    except Exception:
+        body_hash = "unavailable"
+
     try:
         data = await request.json()
         if isinstance(data, dict):
-            return data, True
-        # if it parses but isn't a dict, treat as invalid for this webhook
-        return {}, False
+            return data, True, body_hash
+        return {}, False, body_hash
     except Exception:
-        return {}, False
+        return {}, False, body_hash
 
 
-def _log_invalid_json(ctx: dict[str, str], request: Request) -> None:
+def _log_invalid_json(ctx: dict[str, str], request: Request, body_hash: str) -> None:
     try:
         content_length = request.headers.get("content-length", "unknown")
     except Exception:
         content_length = "unknown"
 
-    # IMPORTANT: we try to read body for hashing in a safe, best-effort way.
-    # If something fails, we still log invalid_json.
-    async def _best_effort_body_hash() -> str:
-        try:
-            raw = await request.body()
-            if not raw:
-                return "empty"
-            return hashlib.sha256(raw).hexdigest()[:12]
-        except Exception:
-            return "unavailable"
-
-    # Since this function is sync but we want body, we keep it minimal:
-    # We'll log without hash here, and callers can add hash if desired.
     try:
         logger.warning(
-            "EV webhook invalid_json trace_id=%s ip=%s content_length=%s",
+            "EV webhook invalid_json trace_id=%s ip=%s content_length=%s body_hash=%s",
             ctx["trace_id"],
             ctx["client_host"],
             content_length,
+            body_hash,
         )
-    except Exception:
-        pass
-
-    # Optional extra log with hash (best effort).
-    # If you prefer only ONE log line, delete this block.
-    try:
-        # fire-and-wait because we are already in request scope
-        # (this is safe; it does not spawn background tasks)
-        # NOTE: if your linter complains about nested async, move this to the handler.
-        pass
     except Exception:
         pass
 
@@ -204,22 +199,146 @@ def _extract_event_and_message(data: dict[str, Any]) -> Tuple[str, Any]:
     return event, raw_message
 
 
+def _extract_meta(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extrae metadatos comunes del payload, para loguear sin depender de bot_input.
+    """
+    d = data.get("data") or {}
+
+    key = d.get("key") or {}
+    meta = {
+        "instanceId": d.get("instanceId") or data.get("instanceId"),
+        "source": d.get("source") or data.get("source"),
+        "remoteJid": key.get("remoteJid") or d.get("key", {}).get("remoteJid"),
+        "participant": key.get("participant"),
+        "keyId": key.get("id"),
+        "messageTimestamp": d.get("messageTimestamp"),
+        "messageType": d.get("messageType"),
+        "pushName": d.get("pushName"),
+        "status": d.get("status"),
+    }
+
+    # Si existe el texto conversacional típico, lo sacamos sin loguear todo el message
+    msg = d.get("message") or {}
+    conv = None
+    try:
+        conv = msg.get("conversation")
+    except Exception:
+        conv = None
+    if conv:
+        meta["conversation"] = conv
+
+    return meta
+
+
+def _log_update_summary(data: dict[str, Any], meta: dict[str, Any]) -> None:
+    """
+    Logs útiles para 'messages.update': ver qué está cambiando y si trae algo que te permita identificar 313/314.
+    """
+    d = data.get("data") or {}
+
+    # Algunas integraciones mandan updates con key/status sin message.
+    # También puede haber arrays o estructuras raras, así que lo hacemos ultra-safe.
+    update_keys = []
+    try:
+        update_keys = list(d.keys())
+    except Exception:
+        update_keys = ["unavailable"]
+
+    key = d.get("key") or {}
+    logger.info(
+        "EV webhook update summary update_keys=%s remoteJid=%s key.id=%s status=%s msgTs=%s msgType=%s",
+        update_keys,
+        meta.get("remoteJid") or key.get("remoteJid"),
+        meta.get("keyId") or key.get("id"),
+        meta.get("status"),
+        meta.get("messageTimestamp"),
+        meta.get("messageType"),
+    )
+
+    # Si por alguna razón el update SI trae message, lo dejamos visible
+    has_message = False
+    try:
+        has_message = bool(d.get("message"))
+    except Exception:
+        has_message = False
+
+    if has_message:
+        msg_keys = []
+        try:
+            msg_keys = list((d.get("message") or {}).keys())
+        except Exception:
+            msg_keys = ["unavailable"]
+        logger.warning(
+            "EV webhook update contains message (!) message_keys=%s remoteJid=%s key.id=%s",
+            msg_keys,
+            meta.get("remoteJid"),
+            meta.get("keyId"),
+        )
+
+
+def _log_upsert_missing_message(data: dict[str, Any], meta: dict[str, Any]) -> None:
+    """
+    Si event=upsert pero raw_message=None, casi seguro el payload no está en data.data.message.
+    Esto te muestra keys y posibles lugares alternativos.
+    """
+    d = data.get("data") or {}
+    d_keys = []
+    try:
+        d_keys = list(d.keys())
+    except Exception:
+        d_keys = ["unavailable"]
+
+    candidates = []
+    # candidatos comunes: data["data"] ya es el message, o viene en "messages"
+    if "messages" in d:
+        try:
+            m = d.get("messages")
+            candidates.append(f"messages_type={type(m).__name__}")
+            if isinstance(m, list) and m:
+                candidates.append(f"messages[0]_keys={list((m[0] or {}).keys())[:20]}")
+        except Exception:
+            candidates.append("messages_parse_error")
+
+    logger.warning(
+        "EV webhook upsert missing raw_message d_keys=%s candidates=%s remoteJid=%s key.id=%s msgType=%s",
+        d_keys,
+        candidates,
+        meta.get("remoteJid"),
+        meta.get("keyId"),
+        meta.get("messageType"),
+    )
+
+
 async def _parse_bot_input(
     data: dict[str, Any],
     evolution_client: EvolutionClient,
     event: str,
+    meta: dict[str, Any],
+    body_hash: str,
 ):
     try:
         bot_input = await parse_evolution_webhook(data, evolution_client)
         if not bot_input:
             logger.warning(
-                "EV webhook discarded reason=parse_evolution_webhook_returned_none event=%s",
+                "EV webhook discarded reason=parse_evolution_webhook_returned_none event=%s body_hash=%s remoteJid=%s key.id=%s msgType=%s msgTs=%s",
                 event,
+                body_hash,
+                meta.get("remoteJid"),
+                meta.get("keyId"),
+                meta.get("messageType"),
+                meta.get("messageTimestamp"),
             )
             return None
         return bot_input
     except Exception:
-        logger.exception("EV parse_evolution_webhook failed event=%s", event)
+        logger.exception(
+            "EV parse_evolution_webhook failed event=%s body_hash=%s remoteJid=%s key.id=%s",
+            event,
+            body_hash,
+            meta.get("remoteJid"),
+            meta.get("keyId"),
+        )
         return None
 
 
