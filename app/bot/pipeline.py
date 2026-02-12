@@ -105,7 +105,7 @@ class OnboardingFlow:
     async def handle(self, command) -> BotMessage:
         chat_id = command.chat_id
         external_user_id = command.user_id
-        logger.info("Onboarding start chat_id=%s user_id=%s", chat_id, external_user_id)
+        logger.debug("Onboarding start chat_id=%s user_id=%s", chat_id, external_user_id)
         if not external_user_id:
             return self.pipeline._make_message(INVALID_TOKEN_MESSAGE)
 
@@ -118,7 +118,7 @@ class OnboardingFlow:
         user_id = f"USR-{int(time.time() * 1000)}-{external_user_id}"
         repo.create_user(user_id, command.channel, str(external_user_id), str(chat_id) if chat_id is not None else None)
         repo.mark_invite_used(command.invite_token, user_id)
-        logger.info("Onboarding success chat_id=%s user_id=%s", chat_id, external_user_id)
+        logger.debug("Onboarding success chat_id=%s user_id=%s", chat_id, external_user_id)
         keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
         return self.pipeline._make_message(ONBOARDING_SUCCESS_MESSAGE, keyboard)
 
@@ -128,20 +128,20 @@ class CommandFlow:
         self.pipeline = pipeline
 
     async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
-        logger.info("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        logger.debug("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
         return self.pipeline._make_message(format_list_message(txs), keyboard)
 
     async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int], channel: str) -> BotMessage:
-        logger.info("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        logger.debug("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_DOWNLOAD, ACTION_HELP])
         compact = channel in {"evolution", "whatsapp"}
         return self.pipeline._make_message(format_summary_message(txs, compact=compact), keyboard)
 
     async def handle_download(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
-        logger.info("Download command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        logger.debug("Download command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         txs = [tx for tx in txs if not tx.get("isDeleted")]
         if not txs:
@@ -160,7 +160,7 @@ class CommandFlow:
         )
 
     async def handle_undo(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
-        logger.info("Undo command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        logger.debug("Undo command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         picked = BotPipeline._pick_latest(txs)
         if picked.get("ok"):
@@ -181,7 +181,7 @@ class AiFlow:
         message_id: Optional[str],
         source: str,
     ) -> BotMessage:
-        logger.info("AI parse start chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        logger.debug("AI parse start chat_id=%s user_id=%s", chat_id, user.get("userId"))
         system_prompt = build_system_prompt(self.pipeline.settings)
         user_message = (command.text_for_parsing or command.text or "").strip()
         content = await self.pipeline._get_groq().chat_completion(system_prompt, user_message)
@@ -240,7 +240,7 @@ class AiFlow:
         tx["deletedAt"] = tx.get("deletedAt", "")
 
         self.pipeline._get_repo().append_transaction(tx)
-        logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx_id)
+        logger.debug("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx_id)
         keyboard = _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
         return self.pipeline._make_message(format_add_tx_message(tx), keyboard)
 
@@ -258,7 +258,7 @@ class BotPipeline(PipelineBase):
         external_user_id = request.user_id
         text = request.text
         settings = self.settings
-        logger.info(
+        logger.debug(
             "Incoming message route=pending chat_id=%s user_id=%s has_text=%s has_voice=%s",
             chat_id,
             external_user_id,
@@ -276,7 +276,7 @@ class BotPipeline(PipelineBase):
 
         command = parse_command(text, chat_id, external_user_id, non_text_type, request.channel)
 
-        logger.info(
+        logger.debug(
             "Parsed command route=%s chat_id=%s user_id=%s",
             command.route,
             chat_id,
@@ -335,7 +335,7 @@ class BotPipeline(PipelineBase):
         external_user_id = request.user_id
         text = request.text
         settings = self.settings
-        logger.info(
+        logger.debug(
             "Incoming callback chat_id=%s user_id=%s has_data=%s",
             chat_id,
             external_user_id,

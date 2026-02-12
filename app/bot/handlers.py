@@ -116,7 +116,7 @@ async def _handle_message_safe(update, context) -> None:
             text = message.caption
         message_id = str(message.message_id) if message else None
         set_log_context("telegram", chat_id, telegram_user_id, message_id)
-        logger.info("Handler message start channel=telegram")
+        logger.debug("Handler message start channel=telegram")
         audio_bytes = None
         non_text_type = None
 
@@ -163,10 +163,10 @@ async def _handle_message_safe(update, context) -> None:
                 return
 
         responses = await pipeline.handle_message(request)
-        logger.info("Handler message responses channel=telegram count=%s", len(responses))
+        logger.debug("Handler message responses channel=telegram count=%s", len(responses))
         for response in responses:
             await send_bot_message(context, chat_id, response)
-        logger.info("Handler message done channel=telegram")
+        logger.debug("Handler message done channel=telegram")
     except Exception as exc:
         await _notify_error(update, context, exc)
 
@@ -186,7 +186,7 @@ async def _handle_callback_safe(update, context) -> None:
         message_id = str(message.message_id) if message else None
         text = callback.data
         set_log_context("telegram", chat_id, telegram_user_id, message_id)
-        logger.info("Handler callback start channel=telegram")
+        logger.debug("Handler callback start channel=telegram")
 
         request = BotInput(
             channel="telegram",
@@ -217,10 +217,10 @@ async def _handle_callback_safe(update, context) -> None:
                 await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
                 return
         responses = await pipeline.handle_callback(request)
-        logger.info("Handler callback responses channel=telegram count=%s", len(responses))
+        logger.debug("Handler callback responses channel=telegram count=%s", len(responses))
         for response in responses:
             await send_bot_message(context, chat_id, response)
-        logger.info("Handler callback done channel=telegram")
+        logger.debug("Handler callback done channel=telegram")
     except Exception as exc:
         await _notify_error(update, context, exc)
 

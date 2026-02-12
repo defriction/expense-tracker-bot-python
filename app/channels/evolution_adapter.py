@@ -18,22 +18,17 @@ def html_to_whatsapp(text: str) -> str:
 
     s = text
 
-    # line breaks
     s = s.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
 
-    # preformatted blocks
     s = re.sub(r"</?pre>", "```", s, flags=re.IGNORECASE)
 
-    # bold / italic
     s = re.sub(r"</?b>", "*", s, flags=re.IGNORECASE)
     s = re.sub(r"</?strong>", "*", s, flags=re.IGNORECASE)
     s = re.sub(r"</?i>", "_", s, flags=re.IGNORECASE)
     s = re.sub(r"</?em>", "_", s, flags=re.IGNORECASE)
 
-    # code
     s = re.sub(r"</?code>", "```", s, flags=re.IGNORECASE)
 
-    # remove any remaining tags
     s = re.sub(r"<[^>]+>", "", s)
 
     return html.unescape(s)
@@ -94,7 +89,6 @@ def _extract_chat_and_user_jid(payload: Dict[str, Any]) -> tuple[str, str]:
     else:
         user_jid = next((jid for jid in candidates if jid.endswith("@s.whatsapp.net")), chat_jid)
 
-    # Evolution no permite sendText/sendList a @lid.
     if chat_jid.endswith("@lid") and user_jid.endswith("@s.whatsapp.net"):
         chat_jid = user_jid
 
@@ -102,11 +96,6 @@ def _extract_chat_and_user_jid(payload: Dict[str, Any]) -> tuple[str, str]:
 
 
 def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
-    """
-    keyboard -> rows para sendList.
-    rowId: ideal action.id (comando); si no existe, usa label.
-    Nota: Evolution (tu instancia) exige row.description NO vacío.
-    """
     rows: List[Dict[str, str]] = []
     for row in message.keyboard.rows:
         for action in row:
@@ -121,7 +110,7 @@ def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
             rows.append(
                 {
                     "title": label,
-                    "description": " ",  # requerido por validación de Evolution
+                    "description": " ",
                     "rowId": row_id,
                 }
             )
@@ -129,9 +118,6 @@ def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
 
 
 def _commands_fallback(text: str, rows: List[Dict[str, str]]) -> str:
-    """
-    Fallback sin encuesta: comandos para tocar/copiar/enviar.
-    """
     lines: List[str] = []
     for r in rows:
         cmd = (r.get("rowId") or "").strip()
@@ -152,7 +138,7 @@ def _commands_fallback(text: str, rows: List[Dict[str, str]]) -> str:
 
 async def send_evolution_message(client: EvolutionClient, to: str, message: BotMessage) -> None:
     if not to:
-        logger.info("EV send skipped reason=missing_to")
+        logger.debug("EV send skipped reason=missing_to")
         return
 
     if to.endswith("@lid"):
@@ -161,7 +147,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
 
     text = html_to_whatsapp(message.text)
 
-    logger.info("EV send start to=%s has_keyboard=%s text_len=%s", to, bool(message.keyboard), len(message.text or ""))
+    logger.debug("EV send start to=%s has_keyboard=%s text_len=%s", to, bool(message.keyboard), len(message.text or ""))
 
     if message.document_bytes:
         media_b64 = base64.b64encode(message.document_bytes).decode("utf-8")
@@ -174,7 +160,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
                 file_name=message.document_name,
                 caption=text,
             )
-            logger.info("EV send ok to=%s kind=document", to)
+            logger.debug("EV send ok to=%s kind=document", to)
             return
         except httpx.HTTPError as exc:
             logger.warning("EV send failed to=%s kind=document error=%s", to, exc)
@@ -186,31 +172,16 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
         if len(rows) < 2:
             try:
                 await client.send_text(to, text, link_preview=False)
-                logger.info("EV send ok to=%s kind=text", to)
+                logger.debug("EV send ok to=%s kind=text", to)
                 return
             except httpx.HTTPError as exc:
                 logger.warning("EV send failed to=%s kind=text error=%s", to, exc)
                 return
 
-        # Disable inline buttons
-        #sections = [{"title": "Opciones", "rows": rows}]
-
-        # try:
-        #     await client.send_list(
-        #         to,
-        #         title="Menú",
-        #         description=text,
-        #         button_text="Abrir",
-        #         sections=sections,
-        #     )
-        #     return
-        # except httpx.HTTPError:
-        #     pass
-
         fallback = _commands_fallback(text, rows)
         try:
             await client.send_text(to, fallback, link_preview=False)
-            logger.info("EV send ok to=%s kind=text", to)
+            logger.debug("EV send ok to=%s kind=text", to)
             return
         except httpx.HTTPError as exc:
             logger.warning("EV send failed to=%s kind=text error=%s", to, exc)
@@ -218,7 +189,7 @@ async def send_evolution_message(client: EvolutionClient, to: str, message: BotM
 
     try:
         await client.send_text(to, text, link_preview=False)
-        logger.info("EV send ok to=%s kind=text", to)
+        logger.debug("EV send ok to=%s kind=text", to)
     except httpx.HTTPError as exc:
         logger.warning("EV send failed to=%s kind=text error=%s", to, exc)
         return
@@ -237,7 +208,7 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
         return None
 
     try:
-        logger.info(
+        logger.debug(
             "EV webhook key.remoteJid=%s key.participant=%s payload.keys=%s",
             _safe_str(key.get("remoteJid")),
             _safe_str(key.get("participant")),
@@ -247,7 +218,7 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
         pass
 
     chat_jid, user_jid = _extract_chat_and_user_jid(payload)
-    logger.info(
+    logger.debug(
         "EV webhook jid.resolve chat_jid=%s user_jid=%s remoteJid=%s remoteJidAlt=%s",
         _safe_str(chat_jid),
         _safe_str(user_jid),
@@ -291,7 +262,7 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
                 media = await client.get_base64_from_media_message(
                     key=key,
                     message=message,
-                    convert_to_mp4=True,  # best compatibility for STT
+                    convert_to_mp4=True,
                 )
                 media_b64 = (media or {}).get("base64")
                 if media_b64:
