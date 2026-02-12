@@ -23,6 +23,7 @@ def build_evolution_router(
 
     @router.post("/evolution/webhook")
     async def evolution_webhook(request: Request, apikey: Optional[str] = Header(None)):
+        logger.info(">>>>>>>EV webhook started")
         ctx = _init_request_context(request)
         _safe_set_log_context(ctx)
 
