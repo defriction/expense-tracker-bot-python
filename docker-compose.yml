@@ -9,10 +9,8 @@ services:
     volumes:
       - ./credentials:/credentials:ro
     networks:
-      proxy: {}
-      internal:
-        aliases:
-          - ${CONTAINER_NAME:-expense-tracker-bot}
+      - proxy
+      - internal
     labels:
       - traefik.enable=true
       - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot}.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`${TRAEFIK_PATH_PREFIX:-/expense/v1}`)

@@ -1,0 +1,29 @@
+services:
+  expense-tracker-bot-dev:
+    image: ${IMAGE_NAME:-expense-tracker-bot:dev}
+    build: .
+    container_name: ${CONTAINER_NAME:-expense-tracker-bot-dev}
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./credentials:/credentials:ro
+    networks:
+      - proxy
+      - internal
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`${TRAEFIK_PATH_PREFIX:-/expense-dev/v1}`)
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.entrypoints=websecure
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.tls=true
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.tls.certresolver=mytlschallenge
+      - traefik.http.services.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.loadbalancer.server.port=8000
+      - traefik.http.middlewares.${TRAEFIK_MIDDLEWARE_NAME:-expense-strip-dev}.stripprefix.prefixes=${TRAEFIK_PATH_PREFIX:-/expense-dev/v1}
+      - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.middlewares=${TRAEFIK_MIDDLEWARE_NAME:-expense-strip-dev}@docker
+      - traefik.docker.network=proxy
+
+networks:
+  proxy:
+    external: true
+  internal:
+    external: true
