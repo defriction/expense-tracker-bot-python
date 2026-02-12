@@ -46,27 +46,59 @@ def _safe_str(v: Any) -> str:
         return "<unprintable>"
 
 
-def _extract_reply_to(payload: Dict[str, Any]) -> str:
+def _is_addressable_jid(jid: str) -> bool:
+    return jid.endswith("@s.whatsapp.net") or jid.endswith("@g.us")
+
+
+def _extract_jid_candidates(payload: Dict[str, Any]) -> List[str]:
     key = (payload.get("key") or {})
-    remote_jid = (key.get("remoteJid") or "")
+    raw_candidates = [
+        key.get("remoteJid"),
+        key.get("remoteJidAlt"),
+        payload.get("remoteJidAlt"),
+        key.get("participant"),
+        payload.get("sender"),
+        payload.get("senderJid"),
+        payload.get("participant"),
+        payload.get("from"),
+    ]
 
-    if remote_jid.endswith("@s.whatsapp.net") or remote_jid.endswith("@g.us"):
-        return remote_jid
+    result: List[str] = []
+    for value in raw_candidates:
+        if not isinstance(value, str):
+            continue
+        jid = value.strip()
+        if not jid or jid in result:
+            continue
+        result.append(jid)
+    return result
 
-    if remote_jid.endswith("@lid"):
-        participant = (key.get("participant") or "")
-        if participant.endswith("@s.whatsapp.net"):
-            return participant
 
-        sender = (payload.get("sender") or payload.get("senderJid") or payload.get("participant") or "")
-        if isinstance(sender, str) and sender.endswith("@s.whatsapp.net"):
-            return sender
+def _extract_chat_and_user_jid(payload: Dict[str, Any]) -> tuple[str, str]:
+    key = (payload.get("key") or {})
+    remote_jid = str(key.get("remoteJid") or "").strip()
+    remote_jid_alt = str(key.get("remoteJidAlt") or payload.get("remoteJidAlt") or "").strip()
+    candidates = _extract_jid_candidates(payload)
 
-        frm = payload.get("from")
-        if isinstance(frm, str) and (frm.endswith("@s.whatsapp.net") or frm.endswith("@g.us")):
-            return frm
+    if _is_addressable_jid(remote_jid):
+        chat_jid = remote_jid
+    elif _is_addressable_jid(remote_jid_alt):
+        chat_jid = remote_jid_alt
+    else:
+        chat_jid = next((jid for jid in candidates if _is_addressable_jid(jid)), remote_jid or remote_jid_alt)
 
-    return remote_jid
+    is_group_chat = chat_jid.endswith("@g.us")
+
+    if is_group_chat:
+        user_jid = next((jid for jid in candidates if jid.endswith("@s.whatsapp.net")), chat_jid)
+    else:
+        user_jid = next((jid for jid in candidates if jid.endswith("@s.whatsapp.net")), chat_jid)
+
+    # Evolution no permite sendText/sendList a @lid.
+    if chat_jid.endswith("@lid") and user_jid.endswith("@s.whatsapp.net"):
+        chat_jid = user_jid
+
+    return chat_jid, user_jid
 
 
 def _rows_from_keyboard(message: BotMessage) -> List[Dict[str, str]]:
@@ -214,7 +246,14 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
     except Exception:
         pass
 
-    reply_to = _extract_reply_to(payload)
+    chat_jid, user_jid = _extract_chat_and_user_jid(payload)
+    logger.info(
+        "EV webhook jid.resolve chat_jid=%s user_jid=%s remoteJid=%s remoteJidAlt=%s",
+        _safe_str(chat_jid),
+        _safe_str(user_jid),
+        _safe_str(key.get("remoteJid")),
+        _safe_str(key.get("remoteJidAlt") or payload.get("remoteJidAlt")),
+    )
 
     selected_row_id = (
         (message.get("listResponseMessage", {}) or {})
@@ -264,8 +303,8 @@ async def parse_evolution_webhook(data: Dict[str, Any], client: EvolutionClient)
 
     return BotInput(
         channel="evolution",
-        chat_id=reply_to,
-        user_id=reply_to,
+        chat_id=chat_jid,
+        user_id=user_jid,
         text=text,
         message_id=key.get("id"),
         audio_bytes=audio_bytes,

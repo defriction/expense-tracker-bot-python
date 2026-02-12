@@ -22,6 +22,13 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
         set_trace_id(f"tx-{uuid.uuid4().hex}")
         set_client_ip(client_host)
         set_log_context("evolution", None, None, None)
+        logger.info(
+            "EV webhook received ip=%s method=%s path=%s apikey_present=%s",
+            client_host,
+            request.method,
+            request.url.path,
+            bool(apikey),
+        )
 
         if settings.evolution_api_key and apikey != settings.evolution_api_key:
             logger.warning("Evolution webhook unauthorized apikey ip=%s apikey_present=%s", client_host, bool(apikey))

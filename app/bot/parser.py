@@ -86,25 +86,26 @@ def parse_command(
 
     clean = text.strip()
     first_token = clean.split()[0].split("@")[0].lower() if clean else ""
+    normalized_token = first_token.lstrip("/")
     args = " ".join(clean.split()[1:]).strip()
 
     route = "ai"
     invite_token = ""
-    if first_token == "/start":
+    if normalized_token == "start":
         if args:
             route = "onboarding"
             invite_token = args
         else:
             route = "help"
-    elif first_token == "/help":
+    elif re.fullmatch(r"help\d*", normalized_token) or normalized_token in {"ayuda", "menu", "menú"}:
         route = "help"
-    elif first_token == "/list":
+    elif normalized_token in {"list", "movimientos"}:
         route = "list"
-    elif first_token == "/summary":
+    elif normalized_token in {"summary", "resumen"}:
         route = "summary"
-    elif first_token in {"/download", "/descargar"}:
+    elif normalized_token in {"download", "descargar"}:
         route = "download"
-    elif first_token == "/undo":
+    elif normalized_token == "undo":
         route = "undo"
 
     return ParsedCommand(
