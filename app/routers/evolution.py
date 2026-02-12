@@ -33,10 +33,11 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
             return {"ok": False, "error": "invalid_json"}
 
         event = (data.get("event") or "").strip().lower().replace("_", ".")
-        logger.info("EV webhook start event=%s", event)
+        raw_message = ((data.get("data") or {}).get("message"))
+        logger.info("EV webhook start event=%s raw_message=%s", event, raw_message)
 
         if event == "messages.update":
-            logger.info("EV webhook update (debug) payload=%s", data)
+            logger.debug("EV webhook update payload=%s", data)
             return {"ok": True}
         if event != "messages.upsert":
             return {"ok": True}
