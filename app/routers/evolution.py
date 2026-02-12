@@ -19,16 +19,25 @@ def build_evolution_router(pipeline: BotPipeline, evolution_client: EvolutionCli
     @router.post("/evolution/webhook")
     async def evolution_webhook(request: Request, apikey: Optional[str] = Header(None)):
         client_host = request.client.host if request.client else "unknown"
+        request_method = getattr(request, "method", "UNKNOWN")
+        request_path = str(getattr(getattr(request, "url", None), "path", "/evolution/webhook"))
         set_trace_id(f"tx-{uuid.uuid4().hex}")
         set_client_ip(client_host)
         set_log_context("evolution", None, None, None)
-        logger.info(
-            "EV webhook received ip=%s method=%s path=%s apikey_present=%s",
-            client_host,
-            request.method,
-            request.url.path,
-            bool(apikey),
-        )
+        try:
+            logger.info(
+                "EV webhook received ip=%s method=%s path=%s apikey_present=%s",
+                client_host,
+                request_method,
+                request_path,
+                bool(apikey),
+            )
+        except Exception:
+            # Never allow request entry logging to break webhook handling.
+            logger.info(
+                "EV webhook received but error logging"
+            )
+            pass
 
         if settings.evolution_api_key and apikey != settings.evolution_api_key:
             logger.warning("Evolution webhook unauthorized apikey ip=%s apikey_present=%s", client_host, bool(apikey))
