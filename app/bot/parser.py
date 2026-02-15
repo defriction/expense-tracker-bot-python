@@ -44,6 +44,64 @@ ALLOWED_AI_FIELDS = {
     "parseConfidence",
 }
 
+_MONEY_TOKEN_RE = re.compile(
+    r"(?<![\w/.-])(?:\$?\s*)?(\d+(?:[.,]\d+)?)(?:\s*(k|luka?s?|luca?s?|m|palo?s?|mil))?\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _money_multiplier(suffix: str) -> int:
+    normalized = (suffix or "").lower()
+    if normalized in {"k", "luka", "lukas", "luca", "lucas", "mil"}:
+        return 1_000
+    if normalized in {"m", "palo", "palos"}:
+        return 1_000_000
+    return 1
+
+
+def _find_money_spans(text: str) -> list[tuple[int, int, float]]:
+    spans: list[tuple[int, int, float]] = []
+    for match in _MONEY_TOKEN_RE.finditer(text or ""):
+        raw_num = (match.group(1) or "").replace(",", ".")
+        suffix = match.group(2) or ""
+        try:
+            value = float(raw_num) * _money_multiplier(suffix)
+        except ValueError:
+            continue
+        if value <= 0:
+            continue
+        if not suffix and value < 1000:
+            nearby = ((text or "")[max(0, match.start() - 8) : min(len(text or ""), match.end() + 8)]).lower()
+            if "$" not in nearby and not re.search(r"\b(cop|peso|pesos|mil)\b", nearby):
+                continue
+        spans.append((match.start(), match.end(), value))
+    return spans
+
+
+def split_multi_transaction_text(text: str) -> list[str]:
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return []
+    spans = _find_money_spans(clean)
+    if len(spans) < 2:
+        return [clean]
+
+    lead = clean[: spans[0][0]].strip(" ,;:.")
+    segments: list[str] = []
+    for idx, (start, _, _) in enumerate(spans):
+        end = spans[idx + 1][0] if idx + 1 < len(spans) else len(clean)
+        piece = clean[start:end]
+        piece = re.sub(r"^\s*(y|e|,|;|\.)\s*", "", piece, flags=re.IGNORECASE)
+        piece = piece.strip(" ,;:.")
+        piece = re.sub(r"\s+(y|e)\s*$", "", piece, flags=re.IGNORECASE).strip()
+        if not piece:
+            continue
+        if lead and idx == 0:
+            piece = f"{lead} {piece}".strip()
+        segments.append(piece)
+
+    return segments if len(segments) >= 2 else [clean]
+
 
 def normalize_amount_slang(text: str) -> str:
     t = str(text or "")

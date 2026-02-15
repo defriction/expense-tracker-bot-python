@@ -137,10 +137,14 @@ Notas:
 - `uber 12000 ayer`
 - `salario 2500000`
 - `le presté 200k a Juan`
+- `me gasté 5k en comida y 60k en ropa y 80k en estuche`
 - `Recuérdame pagar todos los 5 el internet`
 - `recordatorios 12 3,1,0`
 - `monto 12 45000`
 - `pausar 12` / `activar 12` / `cancelar 12`
+
+Si detecta varios montos en un solo mensaje, intentará crear múltiples transacciones.
+Cuando haya baja confianza, pedirá confirmación con `sí` o `no` antes de guardar.
 
 ## Deploy automático
 

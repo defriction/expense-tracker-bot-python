@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -12,6 +13,8 @@ from app.bot.formatters import (
     UNAUTHORIZED_MESSAGE,
     format_add_tx_message,
     format_list_message,
+    format_multi_tx_preview_message,
+    format_multi_tx_saved_message,
     format_recurring_list_message,
     format_summary_message,
     format_undo_message,
@@ -24,6 +27,7 @@ from app.bot.parser import (
     normalize_types,
     parse_command,
     sanitize_ai_payload,
+    split_multi_transaction_text,
 )
 from app.bot.ui_models import BotAction, BotInput, BotKeyboard, BotMessage
 from app.bot.recurring_flow import (
@@ -48,12 +52,14 @@ from app.services.repositories import DataRepo
 
 INVALID_TOKEN_MESSAGE = "Token de invitación inválido o expirado."
 INVALID_TX_MESSAGE = "Monto inválido o categoría faltante. Por favor intenta de nuevo."
+PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 
 ACTION_LIST = BotAction("/list", "🧾 Movimientos")
 ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
 ACTION_UNDO = BotAction("/undo", "↩️ Deshacer")
 ACTION_HELP = BotAction("/help", "ℹ️ Ayuda")
 ACTION_DOWNLOAD = BotAction("/download", "⬇️ Descargar")
+ACTION_RECURRINGS = BotAction("/recurrentes", "🔁 Recurrentes")
 
 
 def _kb(*rows: list[BotAction]) -> BotKeyboard:
@@ -195,6 +201,112 @@ class AiFlow:
     def __init__(self, pipeline: PipelineBase) -> None:
         self.pipeline = pipeline
 
+    @staticmethod
+    def _infer_default_type(text: str) -> str:
+        raw = (text or "").lower()
+        if re.search(r"\b(me pagaron|recibi|recibí|ingreso|gan[eé]|salario|reembolso)\b", raw):
+            return "income"
+        return "expense"
+
+    def _finalize_tx(
+        self,
+        tx: Dict[str, Any],
+        user: Dict[str, Any],
+        chat_id: Optional[int],
+        message_id: Optional[str],
+        source: str,
+    ) -> Dict[str, Any]:
+        tx_id = generate_tx_id()
+        out = dict(tx)
+        out["txId"] = tx_id
+        out["userId"] = user.get("userId")
+        out["paymentMethod"] = out.get("paymentMethod") or "cash"
+        out["normalizedMerchant"] = out.get("normalizedMerchant") or ""
+        out["transactionKind"] = out.get("transactionKind") or "regular"
+        out["isRecurring"] = bool(out.get("isRecurring"))
+        out["recurrence"] = out.get("recurrence") or ""
+        out["recurrenceId"] = out.get("recurrenceId") or ""
+        out["counterparty"] = out.get("counterparty") or ""
+        out["loanRole"] = out.get("loanRole") or ""
+        out["loanId"] = out.get("loanId") or ""
+        out["parseConfidence"] = out.get("parseConfidence") or 0.7
+        out["parserVersion"] = out.get("parserVersion") or "mvp-v1"
+        out["source"] = out.get("source") or source
+        out["sourceMessageId"] = str(message_id or "")
+        out["createdAt"] = out.get("createdAt") or __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        out["updatedAt"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        out["isDeleted"] = out.get("isDeleted", False)
+        out["deletedAt"] = out.get("deletedAt", "")
+        out["chatId"] = chat_id
+        return out
+
+    def _build_multi_preview(self, txs: list[Dict[str, Any]]) -> str:
+        return format_multi_tx_preview_message(txs)
+
+    async def _handle_multi_segments(
+        self,
+        system_prompt: str,
+        segments: list[str],
+        command,
+        user: Dict[str, Any],
+        chat_id: Optional[int],
+        message_id: Optional[str],
+        source: str,
+    ) -> BotMessage:
+        default_type = self._infer_default_type(command.text or "")
+        candidates: list[Dict[str, Any]] = []
+        low_confidence = False
+
+        for segment in segments:
+            content = await self.pipeline._get_groq().chat_completion(system_prompt, segment)
+            try:
+                parsed = extract_json(content)
+            except Exception as exc:
+                logger.warning("AI multi response invalid JSON chat_id=%s user_id=%s error=%s", chat_id, user.get("userId"), exc)
+                keyboard = _kb([ACTION_HELP])
+                return self.pipeline._make_message(HELP_MESSAGE, keyboard)
+            parsed = sanitize_ai_payload(parsed)
+            tx = normalize_ai_response(parsed, segment, chat_id, self.pipeline.settings, source)
+            tx = normalize_types(tx)
+            tx["chatId"] = chat_id
+            tx["sourceMessageId"] = str(message_id or "")
+            tx["intent"] = "add_tx"
+            if str(tx.get("type") or "").lower() not in {"income", "expense"}:
+                tx["type"] = default_type
+            if float(tx.get("amount", 0)) <= 0:
+                keyboard = _kb([ACTION_DOWNLOAD, ACTION_HELP])
+                return self.pipeline._make_message(
+                    "No pude validar todos los montos en el mensaje. Envíalo separado o con formato más claro.",
+                    keyboard,
+                )
+            confidence = float(tx.get("parseConfidence") or 0)
+            if confidence < 0.55:
+                low_confidence = True
+            candidates.append(tx)
+
+        if not candidates:
+            keyboard = _kb([ACTION_HELP])
+            return self.pipeline._make_message(HELP_MESSAGE, keyboard)
+
+        if low_confidence:
+            self.pipeline._get_repo().upsert_pending_action(
+                str(user.get("userId")),
+                PENDING_MULTI_TX_CONFIRM,
+                {"txs": candidates, "source_message_id": str(message_id or ""), "source": source},
+            )
+            return self.pipeline._make_message(
+                self._build_multi_preview(candidates),
+                _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+            )
+
+        finalized = [self._finalize_tx(tx, user, chat_id, message_id, source) for tx in candidates]
+        self.pipeline._get_repo().append_transactions(finalized)
+        logger.info("AI multi tx saved chat_id=%s user_id=%s count=%s", chat_id, user.get("userId"), len(finalized))
+        return self.pipeline._make_message(
+            format_multi_tx_saved_message(finalized),
+            _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+        )
+
     async def handle(
         self,
         command,
@@ -206,6 +318,9 @@ class AiFlow:
         logger.info("AI parse start chat_id=%s user_id=%s", chat_id, user.get("userId"))
         system_prompt = build_system_prompt(self.pipeline.settings)
         user_message = (command.text_for_parsing or command.text or "").strip()
+        segments = split_multi_transaction_text(user_message)
+        if len(segments) >= 2:
+            return await self._handle_multi_segments(system_prompt, segments, command, user, chat_id, message_id, source)
         content = await self.pipeline._get_groq().chat_completion(system_prompt, user_message)
         try:
             parsed = extract_json(content)
@@ -240,29 +355,9 @@ class AiFlow:
             keyboard = _kb([ACTION_DOWNLOAD, ACTION_HELP])
             return self.pipeline._make_message(INVALID_TX_MESSAGE, keyboard)
 
-        tx_id = generate_tx_id()
-        tx["txId"] = tx_id
-        tx["userId"] = user.get("userId")
-        tx["paymentMethod"] = tx.get("paymentMethod") or "cash"
-        tx["normalizedMerchant"] = tx.get("normalizedMerchant") or ""
-        tx["transactionKind"] = tx.get("transactionKind") or "regular"
-        tx["isRecurring"] = bool(tx.get("isRecurring"))
-        tx["recurrence"] = tx.get("recurrence") or ""
-        tx["recurrenceId"] = tx.get("recurrenceId") or ""
-        tx["counterparty"] = tx.get("counterparty") or ""
-        tx["loanRole"] = tx.get("loanRole") or ""
-        tx["loanId"] = tx.get("loanId") or ""
-        tx["parseConfidence"] = tx.get("parseConfidence") or 0.7
-        tx["parserVersion"] = tx.get("parserVersion") or "mvp-v1"
-        tx["source"] = tx.get("source") or source
-        tx["sourceMessageId"] = tx.get("sourceMessageId") or ""
-        tx["createdAt"] = tx.get("createdAt") or __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-        tx["updatedAt"] = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-        tx["isDeleted"] = tx.get("isDeleted", False)
-        tx["deletedAt"] = tx.get("deletedAt", "")
-
+        tx = self._finalize_tx(tx, user, chat_id, message_id, source)
         self.pipeline._get_repo().append_transaction(tx)
-        logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx_id)
+        logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx["txId"])
         keyboard = _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
         text = format_add_tx_message(tx)
         recurring_prompt = self.pipeline._offer_recurring_setup(tx)
@@ -346,6 +441,10 @@ class BotPipeline(PipelineBase):
         pending_edit = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), "recurring_edit_reminders")
         if pending_edit and not (command.command and command.command.startswith("/")) and command.route == "ai":
             return [self._handle_recurring_edit(auth_result.user, command.text, pending_edit)]
+
+        pending_multi = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_MULTI_TX_CONFIRM)
+        if pending_multi and not (command.command and command.command.startswith("/")) and command.route == "ai":
+            return [self._handle_multi_tx_confirm(auth_result.user, command.text, pending_multi, chat_id, request.message_id, request.channel)]
 
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
@@ -481,6 +580,47 @@ class BotPipeline(PipelineBase):
             "Responde <code>sí</code> o <code>no</code>."
         )
 
+    def _handle_multi_tx_confirm(
+        self,
+        user: Dict[str, Any],
+        text: str,
+        pending: Dict[str, Any],
+        chat_id: Optional[int],
+        message_id: Optional[str],
+        source: str,
+    ) -> BotMessage:
+        answer = (text or "").strip()
+        if is_negative(answer):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("Entendido. No guardé esos movimientos.", _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]))
+        if not is_affirmative(answer):
+            return self._make_message(
+                "Responde <code>sí</code> para guardar o <code>no</code> para cancelar.",
+                _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]),
+            )
+
+        state = pending.get("state") or {}
+        if isinstance(state, str):
+            try:
+                state = __import__("json").loads(state)
+            except Exception:
+                state = {}
+        txs = state.get("txs") or []
+        if not isinstance(txs, list) or not txs:
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("No encontré movimientos pendientes para confirmar.", _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]))
+
+        finalized = [self.ai_flow._finalize_tx(dict(tx), user, chat_id, message_id, source) for tx in txs if isinstance(tx, dict)]
+        if not finalized:
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("No encontré movimientos válidos para confirmar.", _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]))
+        self._get_repo().append_transactions(finalized)
+        self._get_repo().delete_pending_action(int(pending["id"]))
+        return self._make_message(
+            format_multi_tx_saved_message(finalized),
+            _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+        )
+
     def _create_recurring_from_tx(self, user_id: str, tx: Dict[str, Any]) -> Dict[str, Any]:
         recurrence_id = str(tx.get("recurrenceId") or "")
         existing = self._get_repo().find_recurring_by_recurrence_id(user_id, recurrence_id)
@@ -517,9 +657,12 @@ class BotPipeline(PipelineBase):
         answer = (text or "").strip()
         if is_negative(answer):
             self._get_repo().delete_pending_action(int(pending["id"]))
-            return self._make_message("Entendido. No crearé recordatorio para ese gasto.")
+            return self._make_message("Entendido. No crearé recordatorio para ese gasto.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
         if not is_affirmative(answer):
-            return self._make_message("Responde <code>sí</code> para crear el recordatorio o <code>no</code> para omitir.")
+            return self._make_message(
+                "Responde <code>sí</code> para crear el recordatorio o <code>no</code> para omitir.",
+                _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+            )
 
         state = pending.get("state") or {}
         if isinstance(state, str):
@@ -536,7 +679,10 @@ class BotPipeline(PipelineBase):
         }
         self._get_repo().delete_pending_action(int(pending["id"]))
         self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
-        return self._make_message(build_setup_question("ask_billing_day", pending_state["recurrence"]))
+        return self._make_message(
+            build_setup_question("ask_billing_day", pending_state["recurrence"]),
+            _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+        )
 
     def _start_recurring_from_text(self, user: Dict[str, Any], text: str) -> BotMessage:
         content = text or ""
@@ -593,7 +739,10 @@ class BotPipeline(PipelineBase):
             f"Perfecto. Crearé el recordatorio para <b>{service_name}</b> "
             f"({recurrence})."
         )
-        return self._make_message(f"{intro}\n\n{build_setup_question(step, recurrence)}")
+        return self._make_message(
+            f"{intro}\n\n{build_setup_question(step, recurrence)}",
+            _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+        )
 
     def _parse_billing_day_from_text(self, text: str) -> Optional[int]:
         import re
@@ -612,7 +761,7 @@ class BotPipeline(PipelineBase):
     def _handle_recurring_setup(self, user: Dict[str, Any], text: str) -> BotMessage:
         pending = self._get_repo().get_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION)
         if not pending:
-            return self._make_message(HELP_MESSAGE, _kb([ACTION_HELP]))
+            return self._make_message(HELP_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         state = pending.get("state") or {}
         if isinstance(state, str):
             try:
@@ -625,7 +774,7 @@ class BotPipeline(PipelineBase):
         result = handle_setup_step(step, text or "", recurrence)
         if result.response:
             follow = build_setup_question(step, recurrence)
-            return self._make_message(f"{result.response}\n\n{follow}")
+            return self._make_message(f"{result.response}\n\n{follow}", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
         updates = result.updates or {}
         if updates:
@@ -649,13 +798,13 @@ class BotPipeline(PipelineBase):
                 )
             self._get_repo().delete_pending_action(int(pending["id"]))
             if recurring:
-                return self._make_message(build_setup_summary(recurring, self.settings))
-            return self._make_message("✅ Recurrente activado.")
+                return self._make_message(build_setup_summary(recurring, self.settings), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+            return self._make_message("✅ Recurrente activado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
         next_step = result.next_step or step
         state["step"] = next_step
         self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, state)
-        return self._make_message(build_setup_question(next_step, recurrence))
+        return self._make_message(build_setup_question(next_step, recurrence), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_edit(self, user: Dict[str, Any], text: str, pending: Optional[Dict[str, Any]] = None) -> BotMessage:
         if pending is None:
@@ -677,11 +826,11 @@ class BotPipeline(PipelineBase):
             offsets_text = content
         else:
             if len(parts) < 2:
-                return self._make_message("Uso: <code>recordatorios ID 3,1,0</code>")
+                return self._make_message("Uso: <code>recordatorios ID 3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
             try:
                 recurring_id = int(parts[1])
             except ValueError:
-                return self._make_message("ID inválido.")
+                return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
             offsets_text = " ".join(parts[2:]).strip()
 
         offsets = parse_remind_offsets(offsets_text)
@@ -692,33 +841,33 @@ class BotPipeline(PipelineBase):
                     "recurring_edit_reminders",
                     {"recurring_id": recurring_id},
                 )
-            return self._make_message("Envía los recordatorios. Ej: <code>3,1,0</code>")
+            return self._make_message("Envía los recordatorios. Ej: <code>3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
 
         recurring = self._get_repo().get_recurring_expense(int(recurring_id))
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.")
+            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         self._get_repo().update_recurring_expense(int(recurring_id), {"remind_offsets": offsets})
         if pending:
             self._get_repo().delete_pending_action(int(pending["id"]))
-        return self._make_message("✅ Recordatorios actualizados.")
+        return self._make_message("✅ Recordatorios actualizados.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_toggle(self, user: Dict[str, Any], text: str) -> BotMessage:
         content = (text or "").strip().lower()
         parts = content.split()
         if len(parts) < 2:
-            return self._make_message("Uso: <code>pausar ID</code> o <code>activar ID</code>")
+            return self._make_message("Uso: <code>pausar ID</code> o <code>activar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         action = parts[0]
         try:
             recurring_id = int(parts[1])
         except ValueError:
-            return self._make_message("ID inválido.")
+            return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.")
+            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
 
         if action == "pausar":
             self._get_repo().update_recurring_expense(recurring_id, {"status": "paused"})
-            return self._make_message("⏸ Recurrente pausado.")
+            return self._make_message("⏸ Recurrente pausado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
         if action == "activar":
             today = get_today(self.settings)
@@ -731,41 +880,41 @@ class BotPipeline(PipelineBase):
                 self._parse_iso_date(str(recurring.get("anchor_date") or "")),
             )
             self._get_repo().update_recurring_expense(recurring_id, {"status": "active", "next_due": next_due})
-            return self._make_message("▶️ Recurrente activado.")
+            return self._make_message("▶️ Recurrente activado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
-        return self._make_message("Acción inválida.")
+        return self._make_message("Acción inválida.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
 
     def _handle_recurring_update_amount(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
         if len(parts) < 3:
-            return self._make_message("Uso: <code>monto ID 45000</code>")
+            return self._make_message("Uso: <code>monto ID 45000</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         try:
             recurring_id = int(parts[1])
         except ValueError:
-            return self._make_message("ID inválido.")
+            return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         amount = parse_amount(" ".join(parts[2:]))
         if amount is None or amount < 0:
-            return self._make_message("Monto inválido.")
+            return self._make_message("Monto inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.")
+            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         self._get_repo().update_recurring_expense(recurring_id, {"amount": amount})
-        return self._make_message("✅ Valor actualizado.")
+        return self._make_message("✅ Valor actualizado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_cancel(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
         if len(parts) < 2:
-            return self._make_message("Uso: <code>cancelar ID</code>")
+            return self._make_message("Uso: <code>cancelar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         try:
             recurring_id = int(parts[1])
         except ValueError:
-            return self._make_message("ID inválido.")
+            return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.")
+            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         self._get_repo().update_recurring_expense(recurring_id, {"status": "canceled", "canceled_at": now})
-        return self._make_message("🛑 Suscripción cancelada.")
+        return self._make_message("🛑 Suscripción cancelada.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_action(self, user: Dict[str, Any], data: str) -> BotMessage:
         parts = (data or "").split(":")

@@ -26,6 +26,8 @@ class DataRepo(Protocol):
 
     def append_transaction(self, tx: Dict[str, Any]) -> None: ...
 
+    def append_transactions(self, txs: list[Dict[str, Any]]) -> None: ...
+
     def list_transactions(self, user_id: str, include_deleted: bool = False) -> list[Dict[str, Any]]: ...
 
     def mark_transaction_deleted(self, tx_id: str) -> None: ...
@@ -113,6 +115,13 @@ class CompositeRepo:
         self.primary.append_transaction(tx)
         for writer in self.secondary_writers:
             _safe_call(lambda: writer.append_transaction(tx))
+
+    def append_transactions(self, txs: list[Dict[str, Any]]) -> None:
+        if not txs:
+            return
+        self.primary.append_transactions(txs)
+        for writer in self.secondary_writers:
+            _safe_call(lambda: writer.append_transactions(txs))
 
     def list_transactions(self, user_id: str, include_deleted: bool = False) -> list[Dict[str, Any]]:
         return self.primary.list_transactions(user_id, include_deleted)

@@ -163,70 +163,76 @@ class PostgresRepo:
             session.commit()
 
     def append_transaction(self, tx: Dict[str, Any]) -> None:
+        self.append_transactions([tx])
+
+    def append_transactions(self, txs: list[Dict[str, Any]]) -> None:
+        if not txs:
+            return
         now = self._now_iso()
-        params = {
-            "tx_id": str(tx.get("txId") or ""),
-            "user_id": str(tx.get("userId") or ""),
-            "type": tx.get("type"),
-            "transaction_kind": tx.get("transactionKind"),
-            "amount": tx.get("amount"),
-            "currency": tx.get("currency"),
-            "category": tx.get("category"),
-            "description": tx.get("description"),
-            "date": tx.get("date") or None,
-            "normalized_merchant": tx.get("normalizedMerchant"),
-            "payment_method": tx.get("paymentMethod"),
-            "counterparty": tx.get("counterparty"),
-            "loan_role": tx.get("loanRole"),
-            "loan_id": tx.get("loanId"),
-            "is_recurring": tx.get("isRecurring"),
-            "recurrence": tx.get("recurrence"),
-            "recurrence_id": tx.get("recurrenceId"),
-            "parse_confidence": tx.get("parseConfidence"),
-            "parser_version": tx.get("parserVersion"),
-            "source": tx.get("source"),
-            "source_message_id": str(tx.get("sourceMessageId") or ""),
-            "raw_text": tx.get("rawText"),
-            "created_at": tx.get("createdAt") or now,
-            "updated_at": tx.get("updatedAt") or now,
-            "is_deleted": tx.get("isDeleted"),
-            "deleted_at": tx.get("deletedAt") or None,
-            "chat_id": str(tx.get("chatId")) if tx.get("chatId") is not None else None,
-        }
         with self._session() as session:
-            session.execute(
-                text(
-                    """
-                    insert into transactions (
-                        tx_id, user_id, type, transaction_kind, amount, currency, category, description, date,
-                        normalized_merchant, payment_method, counterparty, loan_role, loan_id, is_recurring,
-                        recurrence, recurrence_id, parse_confidence, parser_version, source, source_message_id,
-                        raw_text, created_at, updated_at, is_deleted, deleted_at, chat_id
-                    ) values (
-                        :tx_id, :user_id, :type, :transaction_kind, :amount, :currency, :category, :description, :date,
-                        :normalized_merchant, :payment_method, :counterparty, :loan_role, :loan_id, :is_recurring,
-                        :recurrence, :recurrence_id, :parse_confidence, :parser_version, :source, :source_message_id,
-                        :raw_text, :created_at, :updated_at, :is_deleted, :deleted_at, :chat_id
-                    )
-                    """
-                ),
-                params,
-            )
-            session.execute(
-                text(
-                    """
-                    insert into audit_events (entity_type, entity_id, action, payload, created_at, actor_user_id, source)
-                    values ('transaction', :tx_id, 'create', cast(:payload as jsonb), :now, :user_id, :source)
-                    """
-                ),
-                {
-                    "tx_id": params["tx_id"],
-                    "payload": "{}",
-                    "now": now,
-                    "user_id": params["user_id"],
-                    "source": params["source"],
-                },
-            )
+            for tx in txs:
+                params = {
+                    "tx_id": str(tx.get("txId") or ""),
+                    "user_id": str(tx.get("userId") or ""),
+                    "type": tx.get("type"),
+                    "transaction_kind": tx.get("transactionKind"),
+                    "amount": tx.get("amount"),
+                    "currency": tx.get("currency"),
+                    "category": tx.get("category"),
+                    "description": tx.get("description"),
+                    "date": tx.get("date") or None,
+                    "normalized_merchant": tx.get("normalizedMerchant"),
+                    "payment_method": tx.get("paymentMethod"),
+                    "counterparty": tx.get("counterparty"),
+                    "loan_role": tx.get("loanRole"),
+                    "loan_id": tx.get("loanId"),
+                    "is_recurring": tx.get("isRecurring"),
+                    "recurrence": tx.get("recurrence"),
+                    "recurrence_id": tx.get("recurrenceId"),
+                    "parse_confidence": tx.get("parseConfidence"),
+                    "parser_version": tx.get("parserVersion"),
+                    "source": tx.get("source"),
+                    "source_message_id": str(tx.get("sourceMessageId") or ""),
+                    "raw_text": tx.get("rawText"),
+                    "created_at": tx.get("createdAt") or now,
+                    "updated_at": tx.get("updatedAt") or now,
+                    "is_deleted": tx.get("isDeleted"),
+                    "deleted_at": tx.get("deletedAt") or None,
+                    "chat_id": str(tx.get("chatId")) if tx.get("chatId") is not None else None,
+                }
+                session.execute(
+                    text(
+                        """
+                        insert into transactions (
+                            tx_id, user_id, type, transaction_kind, amount, currency, category, description, date,
+                            normalized_merchant, payment_method, counterparty, loan_role, loan_id, is_recurring,
+                            recurrence, recurrence_id, parse_confidence, parser_version, source, source_message_id,
+                            raw_text, created_at, updated_at, is_deleted, deleted_at, chat_id
+                        ) values (
+                            :tx_id, :user_id, :type, :transaction_kind, :amount, :currency, :category, :description, :date,
+                            :normalized_merchant, :payment_method, :counterparty, :loan_role, :loan_id, :is_recurring,
+                            :recurrence, :recurrence_id, :parse_confidence, :parser_version, :source, :source_message_id,
+                            :raw_text, :created_at, :updated_at, :is_deleted, :deleted_at, :chat_id
+                        )
+                        """
+                    ),
+                    params,
+                )
+                session.execute(
+                    text(
+                        """
+                        insert into audit_events (entity_type, entity_id, action, payload, created_at, actor_user_id, source)
+                        values ('transaction', :tx_id, 'create', cast(:payload as jsonb), :now, :user_id, :source)
+                        """
+                    ),
+                    {
+                        "tx_id": params["tx_id"],
+                        "payload": "{}",
+                        "now": now,
+                        "user_id": params["user_id"],
+                        "source": params["source"],
+                    },
+                )
             session.commit()
 
     def list_transactions(self, user_id: str, include_deleted: bool = False) -> list[Dict[str, Any]]:
@@ -654,6 +660,9 @@ class ResilientPostgresRepo:
 
     def append_transaction(self, tx: Dict[str, Any]) -> None:
         return self.repo.append_transaction(tx)
+
+    def append_transactions(self, txs: list[Dict[str, Any]]) -> None:
+        return self.repo.append_transactions(txs)
 
     def list_transactions(self, user_id: str, include_deleted: bool = False) -> list[Dict[str, Any]]:
         return self.repo.list_transactions(user_id, include_deleted)

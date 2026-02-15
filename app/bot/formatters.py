@@ -19,7 +19,13 @@ HELP_MESSAGE = (
     "• <code>Juan me pagó 50k</code>\n\n"
     "<b>Recurrentes</b>\n"
     "• <code>Netflix 39900 mensual</code>\n"
-    "• <code>Recuérdame pagar todos los 5 el internet</code>\n\n"
+    "• <code>Recuérdame pagar todos los 5 el internet</code>\n"
+    "• <code>recordatorios 12 3,1,0</code>\n"
+    "• <code>monto 12 45000</code>\n"
+    "• <code>pausar 12</code> / <code>activar 12</code> / <code>cancelar 12</code>\n\n"
+    "<b>Múltiples movimientos</b>\n"
+    "• <code>me gasté 5k en comida y 60k en ropa</code>\n"
+    "• Si hay ambigüedad, te pediré confirmar con <code>sí</code> o <code>no</code>\n\n"
     "<b>Comandos</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
@@ -101,6 +107,34 @@ def format_add_tx_message(tx: Dict[str, object]) -> str:
     if tx.get("isRecurring"):
         lines.append(f"🔁 <b>Recurrente:</b> {tx.get('recurrence') or 'monthly'}")
 
+    return "\n".join(lines)
+
+
+def format_multi_tx_preview_message(txs: List[Dict[str, object]]) -> str:
+    lines = [
+        f"🧠 <b>Detecté {len(txs)} movimientos</b>",
+        "<i>Revisa antes de guardar</i>",
+        "",
+    ]
+    for idx, tx in enumerate(txs, start=1):
+        amount = format_currency(float(tx.get("amount", 0)), str(tx.get("currency", "COP")))
+        category = escape_html(str(tx.get("category", "misc")))
+        detail = escape_html(str(tx.get("description") or tx.get("normalizedMerchant") or ""))
+        line = f"{idx}. <b>{amount}</b> · <b>{category}</b>"
+        if detail:
+            line += f" · {detail}"
+        lines.append(line)
+    lines.append("")
+    lines.append("Responde <code>sí</code> para guardar o <code>no</code> para cancelar.")
+    return "\n".join(lines)
+
+
+def format_multi_tx_saved_message(txs: List[Dict[str, object]]) -> str:
+    lines = [f"✅ <b>Guardé {len(txs)} movimientos</b>", ""]
+    for idx, tx in enumerate(txs, start=1):
+        amount = format_currency(float(tx.get("amount", 0)), str(tx.get("currency", "COP")))
+        category = escape_html(str(tx.get("category", "misc")))
+        lines.append(f"{idx}. {amount} · <b>{category}</b>")
     return "\n".join(lines)
 
 
