@@ -56,6 +56,7 @@ RECURRING_NOT_FOUND_MESSAGE = "⚠️ <b>No encontrado</b>\nNo encontré un recu
 RECURRING_INVALID_ID_MESSAGE = "⚠️ <b>ID inválido</b>\nEl ID debe ser un número."
 RECURRING_INVALID_ACTION_MESSAGE = "⚠️ <b>Acción inválida</b>"
 PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
+PENDING_CLEAR_ALL_CONFIRM = "clear_all_confirm"
 
 ACTION_LIST = BotAction("/list", "🧾 Movimientos")
 ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
@@ -206,6 +207,26 @@ class CommandFlow:
             self.pipeline._get_repo().mark_transaction_deleted(str(picked["txId"]))
         keyboard = _kb_main()
         return self.pipeline._make_message(format_undo_message(picked), keyboard)
+
+    async def handle_clear_all(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
+        logger.info("Clear-all command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
+        active_count = len([tx for tx in txs if not bool(tx.get("isDeleted"))])
+        if active_count == 0:
+            return self.pipeline._make_message("📭 <b>Sin movimientos</b>\nNo hay transacciones para eliminar.", _kb_main())
+        self.pipeline._get_repo().upsert_pending_action(
+            str(user.get("userId")),
+            PENDING_CLEAR_ALL_CONFIRM,
+            {"active_count": active_count},
+        )
+        return self.pipeline._make_message(
+            (
+                f"⚠️ <b>Vas a eliminar {active_count} transacciones</b>\n"
+                "Esta acción no se puede deshacer con <code>/undo</code>.\n\n"
+                "Responde <code>sí</code> para confirmar o <code>no</code> para cancelar."
+            ),
+            _kb_main(),
+        )
 
 
 class AiFlow:
@@ -457,6 +478,10 @@ class BotPipeline(PipelineBase):
         if pending_multi and not (command.command and command.command.startswith("/")) and command.route == "ai":
             return [self._handle_multi_tx_confirm(auth_result.user, command.text, pending_multi, chat_id, request.message_id, request.channel)]
 
+        pending_clear_all = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_CLEAR_ALL_CONFIRM)
+        if pending_clear_all and not (command.command and command.command.startswith("/")) and command.route == "ai":
+            return [self._handle_clear_all_confirm(auth_result.user, command.text, pending_clear_all)]
+
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
         if command.route == "summary":
@@ -469,6 +494,8 @@ class BotPipeline(PipelineBase):
             return [await self.command_flow.handle_download(auth_result.user, chat_id)]
         if command.route == "undo":
             return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
+        if command.route == "clear_all":
+            return [await self.command_flow.handle_clear_all(auth_result.user, chat_id)]
         if command.route == "recurring_edit":
             return [self._handle_recurring_edit(auth_result.user, command.text)]
         if command.route == "recurring_update_amount":
@@ -510,7 +537,7 @@ class BotPipeline(PipelineBase):
             keyboard = _kb_main()
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
-        if command.route in {"list", "summary", "download", "undo", "ai", "recurring_action", "recurrings"}:
+        if command.route in {"list", "summary", "download", "undo", "clear_all", "ai", "recurring_action", "recurrings"}:
             auth_result = self.auth_flow.require_active_user(
                 request.channel,
                 str(external_user_id) if external_user_id is not None else None,
@@ -535,6 +562,8 @@ class BotPipeline(PipelineBase):
                 return [await self.command_flow.handle_download(auth_result.user, chat_id)]
             elif command.route == "undo":
                 return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
+            elif command.route == "clear_all":
+                return [await self.command_flow.handle_clear_all(auth_result.user, chat_id)]
             elif command.route == "recurring_action":
                 return [self._handle_recurring_action(auth_result.user, command.text)]
             else:
@@ -630,6 +659,26 @@ class BotPipeline(PipelineBase):
         return self._make_message(
             format_multi_tx_saved_message(finalized),
             _kb_after_save(),
+        )
+
+    def _handle_clear_all_confirm(self, user: Dict[str, Any], text: str, pending: Dict[str, Any]) -> BotMessage:
+        answer = (text or "").strip()
+        if is_negative(answer):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("✅ Entendido. No eliminé ninguna transacción.", _kb_main())
+        if not is_affirmative(answer):
+            return self._make_message(
+                "Responde <code>sí</code> para eliminar todo o <code>no</code> para cancelar.",
+                _kb_main(),
+            )
+
+        deleted_count = self._get_repo().mark_all_transactions_deleted(str(user.get("userId")))
+        self._get_repo().delete_pending_action(int(pending["id"]))
+        if deleted_count <= 0:
+            return self._make_message("📭 <b>Sin movimientos</b>\nNo había transacciones activas para eliminar.", _kb_main())
+        return self._make_message(
+            f"🗑️ <b>Listo</b>\nEliminé <b>{deleted_count}</b> transacciones.",
+            _kb_main(),
         )
 
     def _create_recurring_from_tx(self, user_id: str, tx: Dict[str, Any]) -> Dict[str, Any]:

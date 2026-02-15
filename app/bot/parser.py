@@ -179,6 +179,8 @@ def parse_command(
         route = "download"
     elif first_token == "/undo":
         route = "undo"
+    elif first_token in {"/clear", "/wipe", "/borrar_todo"}:
+        route = "clear_all"
     else:
         lower = clean.lower()
         if lower.startswith("recordatorios "):
@@ -193,6 +195,8 @@ def parse_command(
             route = "recurring_toggle"
         elif re.search(r"^(recu[eé]rdame|recordame|recuerdame)\s+pagar\b", lower):
             route = "recurring_create"
+        elif re.search(r"^(borrar|eliminar|limpiar)\s+(todo|todas)\b", lower):
+            route = "clear_all"
 
     return ParsedCommand(
         route=route,

@@ -305,6 +305,33 @@ class PostgresRepo:
             )
             session.commit()
 
+    def mark_all_transactions_deleted(self, user_id: str) -> int:
+        now = self._now_iso()
+        with self._session() as session:
+            result = session.execute(
+                text(
+                    """
+                    update transactions
+                    set is_deleted = true, updated_at = :now, deleted_at = :now
+                    where user_id = :user_id and is_deleted = false
+                    """
+                ),
+                {"now": now, "user_id": user_id},
+            )
+            deleted_count = int(result.rowcount or 0)
+            if deleted_count > 0:
+                session.execute(
+                    text(
+                        """
+                        insert into audit_events (entity_type, entity_id, action, payload, created_at, actor_user_id)
+                        values ('transaction_bulk', :user_id, 'delete_all', cast(:payload as jsonb), :now, :user_id)
+                        """
+                    ),
+                    {"user_id": user_id, "payload": json.dumps({"count": deleted_count}), "now": now},
+                )
+            session.commit()
+            return deleted_count
+
     def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None:
         now = self._now_iso()
         with self._session() as session:
@@ -669,6 +696,9 @@ class ResilientPostgresRepo:
 
     def mark_transaction_deleted(self, tx_id: str) -> None:
         return self.repo.mark_transaction_deleted(tx_id)
+
+    def mark_all_transactions_deleted(self, user_id: str) -> int:
+        return self.repo.mark_all_transactions_deleted(user_id)
 
     def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None:
         try:

@@ -22,6 +22,7 @@ También puede:
 - Muestra recurrentes: `/recurrentes`.
 - Descarga Excel: `/download` o `/descargar`.
 - Deshace el último movimiento: `/undo`.
+- Elimina todas las transacciones (con confirmación): `/clear`.
 
 ## Rutas del webhook
 

@@ -31,6 +31,7 @@ class DataRepo(Protocol):
     def list_transactions(self, user_id: str, include_deleted: bool = False) -> list[Dict[str, Any]]: ...
 
     def mark_transaction_deleted(self, tx_id: str) -> None: ...
+    def mark_all_transactions_deleted(self, user_id: str) -> int: ...
 
     def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None: ...
 
@@ -130,6 +131,12 @@ class CompositeRepo:
         self.primary.mark_transaction_deleted(tx_id)
         for writer in self.secondary_writers:
             _safe_call(lambda: writer.mark_transaction_deleted(tx_id))
+
+    def mark_all_transactions_deleted(self, user_id: str) -> int:
+        deleted_count = self.primary.mark_all_transactions_deleted(user_id)
+        for writer in self.secondary_writers:
+            _safe_call(lambda: writer.mark_all_transactions_deleted(user_id))
+        return deleted_count
 
     def append_error_log(self, workflow: str, node: str, message: str, user_id: Optional[str], chat_id: Optional[str]) -> None:
         self.primary.append_error_log(workflow, node, message, user_id, chat_id)

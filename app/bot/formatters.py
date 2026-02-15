@@ -32,6 +32,7 @@ HELP_MESSAGE = (
     "• <code>/recurrentes</code> ver recurrentes\n"
     "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
+    "• <code>/clear</code> eliminar todas (con confirmación)\n"
     "• <code>/start TU-TOKEN</code> activar cuenta\n\n"
     "<b>Notas</b>\n"
     "• Moneda por defecto: COP\n"
