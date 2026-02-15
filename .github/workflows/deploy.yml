@@ -44,7 +44,11 @@ jobs:
           mkdir -p ${{ env.APP_DIR }}
           cd ${{ env.APP_DIR }}
 
-          echo "${{ secrets.ENV_FILE_EXPENSE }}" > .env
+          if [ "${{ github.ref_name }}" = "develop" ]; then
+            echo "${{ secrets.ENV_FILE_EXPENSE_DEV }}" > .env
+          else
+            echo "${{ secrets.ENV_FILE_EXPENSE }}" > .env
+          fi
           echo "DEPLOY_ENV=${{ env.DEPLOY_ENV }}" >> .env
           echo "TRAEFIK_PATH_PREFIX=${{ env.TRAEFIK_PATH_PREFIX }}" >> .env
           echo "IMAGE_NAME=${{ env.IMAGE_NAME }}" >> .env
