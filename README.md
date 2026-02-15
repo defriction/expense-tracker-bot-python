@@ -23,6 +23,7 @@ También puede:
 - Descarga Excel: `/download` o `/descargar`.
 - Deshace el último movimiento: `/undo`.
 - Elimina todas las transacciones (con confirmación): `/clear`.
+- Cancela todos los recurrentes (con confirmación): `/clear_recurrings`.
 
 ## Rutas del webhook
 
@@ -143,6 +144,7 @@ Notas:
 - `recordatorios 12 3,1,0`
 - `monto 12 45000`
 - `pausar 12` / `activar 12` / `cancelar 12`
+- `/clear_recurrings`
 
 Si detecta varios montos en un solo mensaje, intentará crear múltiples transacciones.
 Cuando haya baja confianza, pedirá confirmación con `sí` o `no` antes de guardar.

@@ -57,6 +57,7 @@ RECURRING_INVALID_ID_MESSAGE = "⚠️ <b>ID inválido</b>\nEl ID debe ser un n�
 RECURRING_INVALID_ACTION_MESSAGE = "⚠️ <b>Acción inválida</b>"
 PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 PENDING_CLEAR_ALL_CONFIRM = "clear_all_confirm"
+PENDING_CLEAR_RECURRINGS_CONFIRM = "clear_recurrings_confirm"
 
 ACTION_LIST = BotAction("/list", "🧾 Movimientos")
 ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
@@ -223,6 +224,27 @@ class CommandFlow:
             (
                 f"⚠️ <b>Vas a eliminar {active_count} transacciones</b>\n"
                 "Esta acción no se puede deshacer con <code>/undo</code>.\n\n"
+                "Responde <code>sí</code> para confirmar o <code>no</code> para cancelar."
+            ),
+            _kb_main(),
+        )
+
+    async def handle_clear_recurrings(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
+        logger.info("Clear-recurrings command chat_id=%s user_id=%s", chat_id, user.get("userId"))
+        items = self.pipeline._get_repo().list_recurring_expenses(user.get("userId"))
+        clearable = [item for item in items if str(item.get("status") or "").lower() != "canceled"]
+        clearable_count = len(clearable)
+        if clearable_count == 0:
+            return self.pipeline._make_message("📭 <b>Sin recurrentes</b>\nNo hay recurrentes activos/pausados para eliminar.", _kb_main())
+        self.pipeline._get_repo().upsert_pending_action(
+            str(user.get("userId")),
+            PENDING_CLEAR_RECURRINGS_CONFIRM,
+            {"clearable_count": clearable_count},
+        )
+        return self.pipeline._make_message(
+            (
+                f"⚠️ <b>Vas a cancelar {clearable_count} recurrentes</b>\n"
+                "Esta acción detiene sus recordatorios futuros.\n\n"
                 "Responde <code>sí</code> para confirmar o <code>no</code> para cancelar."
             ),
             _kb_main(),
@@ -481,6 +503,12 @@ class BotPipeline(PipelineBase):
         pending_clear_all = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_CLEAR_ALL_CONFIRM)
         if pending_clear_all and not (command.command and command.command.startswith("/")) and command.route == "ai":
             return [self._handle_clear_all_confirm(auth_result.user, command.text, pending_clear_all)]
+        pending_clear_recurrings = self._get_repo().get_pending_action(
+            str(auth_result.user.get("userId")),
+            PENDING_CLEAR_RECURRINGS_CONFIRM,
+        )
+        if pending_clear_recurrings and not (command.command and command.command.startswith("/")) and command.route == "ai":
+            return [self._handle_clear_recurrings_confirm(auth_result.user, command.text, pending_clear_recurrings)]
 
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
@@ -496,6 +524,8 @@ class BotPipeline(PipelineBase):
             return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
         if command.route == "clear_all":
             return [await self.command_flow.handle_clear_all(auth_result.user, chat_id)]
+        if command.route == "clear_recurrings":
+            return [await self.command_flow.handle_clear_recurrings(auth_result.user, chat_id)]
         if command.route == "recurring_edit":
             return [self._handle_recurring_edit(auth_result.user, command.text)]
         if command.route == "recurring_update_amount":
@@ -537,7 +567,7 @@ class BotPipeline(PipelineBase):
             keyboard = _kb_main()
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
-        if command.route in {"list", "summary", "download", "undo", "clear_all", "ai", "recurring_action", "recurrings"}:
+        if command.route in {"list", "summary", "download", "undo", "clear_all", "clear_recurrings", "ai", "recurring_action", "recurrings"}:
             auth_result = self.auth_flow.require_active_user(
                 request.channel,
                 str(external_user_id) if external_user_id is not None else None,
@@ -564,6 +594,8 @@ class BotPipeline(PipelineBase):
                 return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
             elif command.route == "clear_all":
                 return [await self.command_flow.handle_clear_all(auth_result.user, chat_id)]
+            elif command.route == "clear_recurrings":
+                return [await self.command_flow.handle_clear_recurrings(auth_result.user, chat_id)]
             elif command.route == "recurring_action":
                 return [self._handle_recurring_action(auth_result.user, command.text)]
             else:
@@ -599,7 +631,16 @@ class BotPipeline(PipelineBase):
             return ""
         existing = self._get_repo().find_recurring_by_recurrence_id(user_id, recurrence_id)
         if existing and str(existing.get("status")) == "active":
-            return ""
+            recurring_id = existing.get("id")
+            return (
+                "ℹ️ Este gasto ya tiene un recordatorio recurrente activo.\n"
+                f"ID: <code>{recurring_id}</code>\n\n"
+                "Para actualizarlo usa:\n"
+                f"• <code>recordatorios {recurring_id} 3,1,0</code>\n"
+                f"• <code>monto {recurring_id} 45000</code>\n"
+                f"• <code>pausar {recurring_id}</code> / <code>activar {recurring_id}</code> / <code>cancelar {recurring_id}</code>\n"
+                "• <code>/recurrings</code> para ver todo"
+            )
         state = {
             "tx": {
                 "txId": tx.get("txId"),
@@ -678,6 +719,31 @@ class BotPipeline(PipelineBase):
             return self._make_message("📭 <b>Sin movimientos</b>\nNo había transacciones activas para eliminar.", _kb_main())
         return self._make_message(
             f"🗑️ <b>Listo</b>\nEliminé <b>{deleted_count}</b> transacciones.",
+            _kb_main(),
+        )
+
+    def _handle_clear_recurrings_confirm(self, user: Dict[str, Any], text: str, pending: Dict[str, Any]) -> BotMessage:
+        answer = (text or "").strip()
+        if is_negative(answer):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("✅ Entendido. No cancelé ningún recurrente.", _kb_main())
+        if not is_affirmative(answer):
+            return self._make_message(
+                "Responde <code>sí</code> para cancelar todos los recurrentes o <code>no</code> para mantenerlos.",
+                _kb_main(),
+            )
+
+        items = self._get_repo().list_recurring_expenses(str(user.get("userId")))
+        clearable = [item for item in items if str(item.get("status") or "").lower() != "canceled"]
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        for item in clearable:
+            self._get_repo().update_recurring_expense(int(item["id"]), {"status": "canceled", "canceled_at": now})
+
+        self._get_repo().delete_pending_action(int(pending["id"]))
+        if not clearable:
+            return self._make_message("📭 <b>Sin recurrentes</b>\nNo había recurrentes para cancelar.", _kb_main())
+        return self._make_message(
+            f"🗑️ <b>Listo</b>\nCancelé <b>{len(clearable)}</b> recurrentes.",
             _kb_main(),
         )
 

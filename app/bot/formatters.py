@@ -20,6 +20,7 @@ HELP_MESSAGE = (
     "<b>Recurrentes</b>\n"
     "• <code>Netflix 39900 mensual</code>\n"
     "• <code>Recuérdame pagar todos los 5 el internet</code>\n"
+    "• <code>/recurrings</code> (ver IDs)\n"
     "• <code>recordatorios 12 3,1,0</code>\n"
     "• <code>monto 12 45000</code>\n"
     "• <code>pausar 12</code> / <code>activar 12</code> / <code>cancelar 12</code>\n\n"
@@ -33,6 +34,7 @@ HELP_MESSAGE = (
     "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
     "• <code>/clear</code> eliminar todas (con confirmación)\n"
+    "• <code>/clear_recurrings</code> cancelar recurrentes (con confirmación)\n"
     "• <code>/start TU-TOKEN</code> activar cuenta\n\n"
     "<b>Notas</b>\n"
     "• Moneda por defecto: COP\n"
@@ -227,10 +229,12 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
         message.append(f"<b>Próximo cobro:</b> <code>{next_due}</code>")
         message.append("")
 
-    message.append("Editar recordatorios: <code>recordatorios ID 3,1,0</code>")
-    message.append("Actualizar monto: <code>monto ID 45000</code>")
-    message.append("Cancelar: <code>cancelar ID</code>")
-    message.append("Pausar/activar: <code>pausar ID</code> / <code>activar ID</code>")
+    message.append("Cómo actualizar uno:")
+    message.append("1) Copia el <b>ID</b> de arriba.")
+    message.append("2) Recordatorios: <code>recordatorios ID 3,1,0</code>")
+    message.append("3) Monto: <code>monto ID 45000</code>")
+    message.append("4) Estado: <code>pausar ID</code> / <code>activar ID</code> / <code>cancelar ID</code>")
+    message.append("5) Limpiar todos: <code>/clear_recurrings</code>")
     return "\n".join(message).strip()
 
 

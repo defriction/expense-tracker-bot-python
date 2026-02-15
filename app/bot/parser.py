@@ -181,6 +181,8 @@ def parse_command(
         route = "undo"
     elif first_token in {"/clear", "/wipe", "/borrar_todo"}:
         route = "clear_all"
+    elif first_token in {"/clear_recurrings", "/borrar_recurrentes"}:
+        route = "clear_recurrings"
     else:
         lower = clean.lower()
         if lower.startswith("recordatorios "):
@@ -197,6 +199,8 @@ def parse_command(
             route = "recurring_create"
         elif re.search(r"^(borrar|eliminar|limpiar)\s+(todo|todas)\b", lower):
             route = "clear_all"
+        elif re.search(r"^(borrar|eliminar|limpiar)\s+recurrentes\b", lower):
+            route = "clear_recurrings"
 
     return ParsedCommand(
         route=route,
