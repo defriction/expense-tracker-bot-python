@@ -134,7 +134,11 @@ def format_multi_tx_saved_message(txs: List[Dict[str, object]]) -> str:
     for idx, tx in enumerate(txs, start=1):
         amount = format_currency(float(tx.get("amount", 0)), str(tx.get("currency", "COP")))
         category = escape_html(str(tx.get("category", "misc")))
-        lines.append(f"{idx}. {amount} · <b>{category}</b>")
+        detail = escape_html(str(tx.get("description") or tx.get("normalizedMerchant") or ""))
+        line = f"{idx}. {amount} · <b>{category}</b>"
+        if detail:
+            line += f" · {detail}"
+        lines.append(line)
     return "\n".join(lines)
 
 

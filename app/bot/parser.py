@@ -48,6 +48,7 @@ _MONEY_TOKEN_RE = re.compile(
     r"(?<![\w/.-])(?:\$?\s*)?(\d+(?:[.,]\d+)?)(?:\s*(k|luka?s?|luca?s?|m|palo?s?|mil))?\b",
     flags=re.IGNORECASE,
 )
+_MULTI_TX_SEPARATOR_RE = re.compile(r"(?:\s+(?:y|e|luego|despues|después)\s+|[;,])", flags=re.IGNORECASE)
 
 
 def _money_multiplier(suffix: str) -> int:
@@ -86,18 +87,28 @@ def split_multi_transaction_text(text: str) -> list[str]:
     if len(spans) < 2:
         return [clean]
 
-    lead = clean[: spans[0][0]].strip(" ,;:.")
+    def _clean_piece(piece: str) -> str:
+        out = piece.strip(" ,;:.")
+        out = re.sub(r"^\s*(y|e)\s+", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\s+(y|e)\s*$", "", out, flags=re.IGNORECASE)
+        return out.strip(" ,;:.")
+
     segments: list[str] = []
-    for idx, (start, _, _) in enumerate(spans):
-        end = spans[idx + 1][0] if idx + 1 < len(spans) else len(clean)
-        piece = clean[start:end]
-        piece = re.sub(r"^\s*(y|e|,|;|\.)\s*", "", piece, flags=re.IGNORECASE)
-        piece = piece.strip(" ,;:.")
-        piece = re.sub(r"\s+(y|e)\s*$", "", piece, flags=re.IGNORECASE).strip()
+    for idx, (start, end, _) in enumerate(spans):
+        prev_end = 0 if idx == 0 else spans[idx - 1][1]
+        next_start = len(clean) if idx + 1 >= len(spans) else spans[idx + 1][0]
+
+        left_window = clean[prev_end:start]
+        left_matches = list(_MULTI_TX_SEPARATOR_RE.finditer(left_window))
+        segment_start = prev_end + (left_matches[-1].end() if left_matches else 0)
+
+        right_window = clean[end:next_start]
+        right_match = _MULTI_TX_SEPARATOR_RE.search(right_window)
+        segment_end = end + (right_match.start() if right_match else len(right_window))
+
+        piece = _clean_piece(clean[segment_start:segment_end])
         if not piece:
             continue
-        if lead and idx == 0:
-            piece = f"{lead} {piece}".strip()
         segments.append(piece)
 
     return segments if len(segments) >= 2 else [clean]
