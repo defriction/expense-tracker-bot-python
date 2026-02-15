@@ -114,10 +114,16 @@ def parse_command(
         lower = clean.lower()
         if lower.startswith("recordatorios "):
             route = "recurring_edit"
+        elif lower.startswith("monto "):
+            route = "recurring_update_amount"
+        elif lower.startswith("cancelar "):
+            route = "recurring_cancel"
         elif lower.startswith("pausar "):
             route = "recurring_toggle"
         elif lower.startswith("activar "):
             route = "recurring_toggle"
+        elif re.search(r"^(recu[eé]rdame|recordame|recuerdame)\s+pagar\b", lower):
+            route = "recurring_create"
 
     return ParsedCommand(
         route=route,
@@ -353,7 +359,8 @@ def build_system_prompt(settings: Settings) -> str:
         "You are a financial assistant. Extract structured data from a single user message.\n\n"
         "Return JSON ONLY. No markdown, no backticks.\n\n"
         "General rules:\n"
-        "- Currency is always COP (ignore any other currency).\n"
+        "- Currency is always COP. Always output currency='COP' exactly.\n"
+        "- If user writes USD/EUR/other symbols, ignore that and keep currency='COP'.\n"
         "- paymentMethod defaults to 'cash' when unspecified.\n"
         "- Date must be YYYY-MM-DD. Use Current Date (America/Bogota) when user did not specify a date.\n"
         "- Relative time: interpret \"anoche\" as yesterday's date (America/Bogota).\n"
@@ -377,7 +384,9 @@ def build_system_prompt(settings: Settings) -> str:
         "- loanRole: 'lent' | 'borrowed' | 'repayment'.\n"
         "- loanId: stable id like 'LOAN:<COUNTERPARTY>' when possible.\n\n"
         "Recurring:\n"
-        "- isRecurring: true if periodic payment is indicated (mensual, cada mes, semanal, trimestral, anual, suscripción, cada quincena).\n"
+        "- isRecurring: true if periodic payment is indicated (mensual, cada mes, semanal, trimestral, anual, suscripción, cada quincena, todos los meses, cada 15 días).\n"
+        "- If periodicity is NOT explicit, set isRecurring=false.\n"
+        "- Common recurring clues: internet, luz, agua, gas, celular, arriendo, streaming, suscripciones.\n"
         "- recurrence: 'weekly'|'biweekly'|'monthly'|'quarterly'|'yearly' when isRecurring=true.\n"
         "- recurrenceId: stable id like 'REC:<NORMALIZED_MERCHANT>'.\n\n"
         "Categories (choose ONE, avoid 'misc' unless nothing fits):\n"

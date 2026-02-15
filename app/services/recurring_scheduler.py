@@ -18,19 +18,26 @@ def _build_keyboard(actions: Iterable[tuple[str, str]]) -> InlineKeyboardMarkup:
 
 
 def _reminder_text(recurring: Dict[str, Any], due_date: date, offset: int) -> str:
-    amount = format_currency(float(recurring.get("amount", 0)), str(recurring.get("currency", "COP")))
-    merchant = recurring.get("normalized_merchant") or recurring.get("description") or "Gasto recurrente"
+    raw_amount = recurring.get("amount")
+    amount = "Por definir"
+    try:
+        if raw_amount is not None and float(raw_amount) > 0:
+            amount = format_currency(float(raw_amount), str(recurring.get("currency", "COP")))
+    except (TypeError, ValueError):
+        amount = "Por definir"
+
+    service_name = recurring.get("service_name") or recurring.get("normalized_merchant") or recurring.get("description") or "Pago recurrente"
     link = recurring.get("payment_link") or "—"
     reference = recurring.get("payment_reference") or "—"
     when = "hoy" if offset == 0 else f"en {offset} día(s)"
     return (
         "⏰ <b>Recordatorio de pago</b>\n"
         f"<b>Vence:</b> <code>{due_date.isoformat()}</code> ({escape_html(when)})\n"
+        f"<b>Servicio:</b> {escape_html(str(service_name))}\n"
         f"<b>Monto:</b> {amount}\n"
-        f"<b>Concepto:</b> {escape_html(str(merchant))}\n"
-        f"<b>Enlace:</b> {escape_html(str(link))}\n"
-        f"<b>Referencia:</b> {escape_html(str(reference))}\n\n"
-        "¿Ya pagaste?"
+        f"<b>Referencia:</b> {escape_html(str(reference))}\n"
+        f"<b>Enlace:</b> {escape_html(str(link))}\n\n"
+        "¿Ya realizaste el pago?"
     )
 
 
@@ -84,6 +91,49 @@ async def process_recurring_reminders(
     settings: Settings,
 ) -> None:
     today = get_today(settings)
+    repo.mark_overdue_bill_instances(today.isoformat())
+    follow_ups = repo.list_due_follow_up_bill_instances(today.isoformat())
+    for bill in follow_ups:
+        try:
+            reminder_id = repo.create_bill_reminder_if_missing(
+                int(bill["id"]),
+                -1,
+                today.isoformat(),
+            )
+            if not reminder_id:
+                continue
+            chat_id = repo.get_user_chat_id(str(bill["user_id"]), "telegram")
+            if not chat_id:
+                continue
+            recurring = {
+                "amount": bill.get("amount"),
+                "currency": bill.get("currency"),
+                "service_name": bill.get("service_name"),
+                "payment_link": bill.get("payment_link") or bill.get("recurring_payment_link"),
+                "payment_reference": bill.get("reference_number") or bill.get("recurring_payment_reference"),
+            }
+            due_date = bill.get("due_date")
+            due = due_date if isinstance(due_date, date) else date.fromisoformat(str(due_date))
+            actions = [
+                (f"recurring:paid:{bill['id']}", "✅ Sí"),
+                (f"recurring:later:{bill['id']}", "⏳ Después"),
+                (f"recurring:no:{bill['id']}", "❌ No"),
+            ]
+            await bot.send_message(
+                chat_id=int(chat_id),
+                text=_reminder_text(recurring, due, 0),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=_build_keyboard(actions),
+            )
+            repo.update_bill_instance(int(bill["id"]), {"follow_up_on": None})
+            repo.update_bill_reminder(
+                int(reminder_id),
+                {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()},
+            )
+        except Exception as exc:
+            logger.warning("Recurring follow-up reminder failed: %s", exc)
+
     recurring_expenses = repo.list_active_recurring_expenses()
     for recurring in recurring_expenses:
         try:
@@ -93,6 +143,7 @@ async def process_recurring_reminders(
             billing_day = recurring.get("billing_day")
             billing_weekday = recurring.get("billing_weekday")
             billing_month = recurring.get("billing_month")
+
             if next_due is None or next_due < today:
                 next_due = compute_next_due(
                     recurrence,
@@ -104,6 +155,16 @@ async def process_recurring_reminders(
                 )
                 repo.update_recurring_expense(int(recurring["id"]), {"next_due": next_due})
 
+            bill_instance = repo.upsert_bill_instance(
+                int(recurring["id"]),
+                int(next_due.year),
+                int(next_due.month),
+                next_due.isoformat(),
+                float(recurring.get("amount") or 0),
+                recurring.get("payment_link"),
+                recurring.get("payment_reference"),
+            )
+
             offsets = _extract_offsets(recurring)
             if 0 not in offsets:
                 offsets.append(0)
@@ -112,20 +173,23 @@ async def process_recurring_reminders(
                 reminder_date = next_due - timedelta(days=int(offset))
                 if reminder_date != today:
                     continue
-                event_id = repo.create_recurring_event_if_missing(
-                    int(recurring["id"]),
-                    reminder_date.isoformat(),
+
+                reminder_id = repo.create_bill_reminder_if_missing(
+                    int(bill_instance["id"]),
                     int(offset),
-                    next_due.isoformat(),
+                    reminder_date.isoformat(),
                 )
-                if not event_id:
+                if not reminder_id:
                     continue
+
                 chat_id = repo.get_user_chat_id(str(recurring["user_id"]), "telegram")
                 if not chat_id:
                     continue
+
                 actions = [
-                    (f"recurring:paid:{event_id}", "✅ Pagado"),
-                    (f"recurring:skip:{event_id}", "⏳ No pagado"),
+                    (f"recurring:paid:{bill_instance['id']}", "✅ Sí"),
+                    (f"recurring:later:{bill_instance['id']}", "⏳ Después"),
+                    (f"recurring:no:{bill_instance['id']}", "❌ No"),
                 ]
                 await bot.send_message(
                     chat_id=int(chat_id),
@@ -134,8 +198,8 @@ async def process_recurring_reminders(
                     disable_web_page_preview=True,
                     reply_markup=_build_keyboard(actions),
                 )
-                repo.update_recurring_event(
-                    int(event_id),
+                repo.update_bill_reminder(
+                    int(reminder_id),
                     {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()},
                 )
         except Exception as exc:

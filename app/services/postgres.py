@@ -306,6 +306,7 @@ class PostgresRepo:
         now = self._now_iso()
         params = {
             "user_id": data.get("user_id"),
+            "service_name": data.get("service_name") or data.get("normalized_merchant") or data.get("description") or "Pago recurrente",
             "recurrence_id": data.get("recurrence_id"),
             "normalized_merchant": data.get("normalized_merchant"),
             "description": data.get("description"),
@@ -323,6 +324,8 @@ class PostgresRepo:
             "remind_offsets": json.dumps(data.get("remind_offsets") or [3, 1]),
             "next_due": data.get("next_due"),
             "status": data.get("status") or "pending",
+            "auto_add_transaction": bool(data.get("auto_add_transaction", True)),
+            "canceled_at": data.get("canceled_at"),
             "source_tx_id": data.get("source_tx_id"),
             "created_at": data.get("created_at") or now,
             "updated_at": data.get("updated_at") or now,
@@ -332,13 +335,15 @@ class PostgresRepo:
                 text(
                     """
                     insert into recurring_expenses (
-                        user_id, recurrence_id, normalized_merchant, description, category, amount, currency,
+                        user_id, service_name, recurrence_id, normalized_merchant, description, category, amount, currency,
                         recurrence, billing_day, billing_weekday, billing_month, anchor_date, timezone, payment_link,
-                        payment_reference, remind_offsets, next_due, status, source_tx_id, created_at, updated_at
+                        payment_reference, remind_offsets, next_due, status, auto_add_transaction, canceled_at,
+                        source_tx_id, created_at, updated_at
                     ) values (
-                        :user_id, :recurrence_id, :normalized_merchant, :description, :category, :amount, :currency,
+                        :user_id, :service_name, :recurrence_id, :normalized_merchant, :description, :category, :amount, :currency,
                         :recurrence, :billing_day, :billing_weekday, :billing_month, :anchor_date, :timezone, :payment_link,
-                        :payment_reference, cast(:remind_offsets as jsonb), :next_due, :status, :source_tx_id, :created_at, :updated_at
+                        :payment_reference, cast(:remind_offsets as jsonb), :next_due, :status, :auto_add_transaction, :canceled_at,
+                        :source_tx_id, :created_at, :updated_at
                     )
                     returning *
                     """
@@ -393,35 +398,52 @@ class PostgresRepo:
             rows = session.execute(sql, {"user_id": user_id}).mappings().all()
             return [dict(row) for row in rows]
 
-    def create_recurring_event_if_missing(
-        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
-    ) -> Optional[int]:
+    def upsert_bill_instance(
+        self,
+        recurring_id: int,
+        period_year: int,
+        period_month: int,
+        due_date: str,
+        amount: Optional[float],
+        payment_link: Optional[str],
+        reference_number: Optional[str],
+    ) -> Dict[str, Any]:
         now = self._now_iso()
         with self._session() as session:
             row = session.execute(
                 text(
                     """
-                    insert into recurring_events (
-                        recurring_id, reminder_date, reminder_offset, due_date, status, created_at, updated_at
+                    insert into bill_instances (
+                        recurring_id, period_year, period_month, due_date, status, amount,
+                        payment_link, reference_number, created_at, updated_at
                     ) values (
-                        :recurring_id, :reminder_date, :reminder_offset, :due_date, 'pending', :now, :now
+                        :recurring_id, :period_year, :period_month, :due_date, 'pending', :amount,
+                        :payment_link, :reference_number, :now, :now
                     )
-                    on conflict (recurring_id, reminder_date, reminder_offset) do nothing
-                    returning id
+                    on conflict (recurring_id, period_year, period_month)
+                    do update set due_date = excluded.due_date,
+                                  amount = excluded.amount,
+                                  payment_link = excluded.payment_link,
+                                  reference_number = excluded.reference_number,
+                                  updated_at = excluded.updated_at
+                    returning *
                     """
                 ),
                 {
                     "recurring_id": recurring_id,
-                    "reminder_date": reminder_date,
-                    "reminder_offset": reminder_offset,
+                    "period_year": period_year,
+                    "period_month": period_month,
                     "due_date": due_date,
+                    "amount": amount,
+                    "payment_link": payment_link,
+                    "reference_number": reference_number,
                     "now": now,
                 },
-            ).scalar()
+            ).mappings().first()
             session.commit()
-            return int(row) if row else None
+            return dict(row)
 
-    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None:
+    def update_bill_instance(self, bill_instance_id: int, updates: Dict[str, Any]) -> None:
         if not updates:
             return
         updates = dict(updates)
@@ -429,25 +451,101 @@ class PostgresRepo:
         fields = []
         for key in updates.keys():
             fields.append(f"{key} = :{key}")
-        sql = text(f"update recurring_events set {', '.join(fields)} where id = :id")
-        updates["id"] = event_id
+        sql = text(f"update bill_instances set {', '.join(fields)} where id = :id")
+        updates["id"] = bill_instance_id
         with self._session() as session:
             session.execute(sql, updates)
             session.commit()
 
-    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+    def get_bill_instance(self, bill_instance_id: int) -> Optional[Dict[str, Any]]:
         sql = text(
             """
-            select e.*, r.user_id, r.amount, r.currency, r.category, r.description,
-                   r.normalized_merchant, r.recurrence, r.recurrence_id
-            from recurring_events e
-            join recurring_expenses r on r.id = e.recurring_id
-            where e.id = :event_id
+            select b.*, r.user_id, r.service_name, r.amount as recurring_amount, r.currency, r.category, r.description,
+                   r.normalized_merchant, r.recurrence, r.recurrence_id, r.auto_add_transaction
+            from bill_instances b
+            join recurring_expenses r on r.id = b.recurring_id
+            where b.id = :bill_instance_id
             """
         )
         with self._session() as session:
-            row = session.execute(sql, {"event_id": event_id}).mappings().first()
+            row = session.execute(sql, {"bill_instance_id": bill_instance_id}).mappings().first()
             return dict(row) if row else None
+
+    def mark_overdue_bill_instances(self, today_iso: str) -> int:
+        with self._session() as session:
+            result = session.execute(
+                text(
+                    """
+                    update bill_instances
+                    set status = 'overdue', updated_at = :now
+                    where status = 'pending' and due_date < :today
+                    """
+                ),
+                {"today": today_iso, "now": self._now_iso()},
+            )
+            session.commit()
+            return int(result.rowcount or 0)
+
+    def list_due_follow_up_bill_instances(self, today_iso: str) -> list[Dict[str, Any]]:
+        sql = text(
+            """
+            select b.*, r.user_id, r.service_name, r.currency, r.category, r.description,
+                   r.normalized_merchant, r.recurrence, r.recurrence_id, r.auto_add_transaction,
+                   r.payment_link as recurring_payment_link, r.payment_reference as recurring_payment_reference
+            from bill_instances b
+            join recurring_expenses r on r.id = b.recurring_id
+            where b.status = 'pending'
+              and b.follow_up_on = :today
+              and r.status = 'active'
+            """
+        )
+        with self._session() as session:
+            rows = session.execute(sql, {"today": today_iso}).mappings().all()
+            return [dict(row) for row in rows]
+
+    def create_bill_reminder_if_missing(
+        self,
+        bill_instance_id: int,
+        reminder_offset: int,
+        scheduled_for: str,
+    ) -> Optional[int]:
+        now = self._now_iso()
+        with self._session() as session:
+            row = session.execute(
+                text(
+                    """
+                    insert into bill_instance_reminders (
+                        bill_instance_id, reminder_offset, scheduled_for, status, created_at, updated_at
+                    ) values (
+                        :bill_instance_id, :reminder_offset, :scheduled_for, 'pending', :now, :now
+                    )
+                    on conflict (bill_instance_id, reminder_offset, scheduled_for) do nothing
+                    returning id
+                    """
+                ),
+                {
+                    "bill_instance_id": bill_instance_id,
+                    "reminder_offset": reminder_offset,
+                    "scheduled_for": scheduled_for,
+                    "now": now,
+                },
+            ).scalar()
+            session.commit()
+            return int(row) if row else None
+
+    def update_bill_reminder(self, reminder_id: int, updates: Dict[str, Any]) -> None:
+        if not updates:
+            return
+        updates = dict(updates)
+        updates["updated_at"] = updates.get("updated_at") or self._now_iso()
+        fields = []
+        for key in updates.keys():
+            fields.append(f"{key} = :{key}")
+        sql = text(f"update bill_instance_reminders set {', '.join(fields)} where id = :id")
+        updates["id"] = reminder_id
+        with self._session() as session:
+            session.execute(sql, updates)
+            session.commit()
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         sql = text(
@@ -555,16 +653,52 @@ class ResilientPostgresRepo:
     def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]:
         return self.repo.list_recurring_expenses(user_id)
 
-    def create_recurring_event_if_missing(
-        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    def upsert_bill_instance(
+        self,
+        recurring_id: int,
+        period_year: int,
+        period_month: int,
+        due_date: str,
+        amount: Optional[float],
+        payment_link: Optional[str],
+        reference_number: Optional[str],
+    ) -> Dict[str, Any]:
+        return self.repo.upsert_bill_instance(
+            recurring_id,
+            period_year,
+            period_month,
+            due_date,
+            amount,
+            payment_link,
+            reference_number,
+        )
+
+    def update_bill_instance(self, bill_instance_id: int, updates: Dict[str, Any]) -> None:
+        return self.repo.update_bill_instance(bill_instance_id, updates)
+
+    def get_bill_instance(self, bill_instance_id: int) -> Optional[Dict[str, Any]]:
+        return self.repo.get_bill_instance(bill_instance_id)
+
+    def mark_overdue_bill_instances(self, today_iso: str) -> int:
+        return self.repo.mark_overdue_bill_instances(today_iso)
+
+    def list_due_follow_up_bill_instances(self, today_iso: str) -> list[Dict[str, Any]]:
+        return self.repo.list_due_follow_up_bill_instances(today_iso)
+
+    def create_bill_reminder_if_missing(
+        self,
+        bill_instance_id: int,
+        reminder_offset: int,
+        scheduled_for: str,
     ) -> Optional[int]:
-        return self.repo.create_recurring_event_if_missing(recurring_id, reminder_date, reminder_offset, due_date)
+        return self.repo.create_bill_reminder_if_missing(
+            bill_instance_id,
+            reminder_offset,
+            scheduled_for,
+        )
 
-    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None:
-        return self.repo.update_recurring_event(event_id, updates)
-
-    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]:
-        return self.repo.get_recurring_event(event_id)
+    def update_bill_reminder(self, reminder_id: int, updates: Dict[str, Any]) -> None:
+        return self.repo.update_bill_reminder(reminder_id, updates)
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         return self.repo.get_user_chat_id(user_id, channel)

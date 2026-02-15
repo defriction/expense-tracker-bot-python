@@ -42,13 +42,32 @@ class DataRepo(Protocol):
 
     def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]: ...
 
-    def create_recurring_event_if_missing(
-        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    def upsert_bill_instance(
+        self,
+        recurring_id: int,
+        period_year: int,
+        period_month: int,
+        due_date: str,
+        amount: Optional[float],
+        payment_link: Optional[str],
+        reference_number: Optional[str],
+    ) -> Dict[str, Any]: ...
+
+    def update_bill_instance(self, bill_instance_id: int, updates: Dict[str, Any]) -> None: ...
+
+    def get_bill_instance(self, bill_instance_id: int) -> Optional[Dict[str, Any]]: ...
+
+    def mark_overdue_bill_instances(self, today_iso: str) -> int: ...
+    def list_due_follow_up_bill_instances(self, today_iso: str) -> list[Dict[str, Any]]: ...
+
+    def create_bill_reminder_if_missing(
+        self,
+        bill_instance_id: int,
+        reminder_offset: int,
+        scheduled_for: str,
     ) -> Optional[int]: ...
 
-    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None: ...
-
-    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]: ...
+    def update_bill_reminder(self, reminder_id: int, updates: Dict[str, Any]) -> None: ...
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]: ...
 
@@ -121,16 +140,52 @@ class CompositeRepo:
     def list_recurring_expenses(self, user_id: str) -> list[Dict[str, Any]]:
         return self.primary.list_recurring_expenses(user_id)
 
-    def create_recurring_event_if_missing(
-        self, recurring_id: int, reminder_date: str, reminder_offset: int, due_date: str
+    def upsert_bill_instance(
+        self,
+        recurring_id: int,
+        period_year: int,
+        period_month: int,
+        due_date: str,
+        amount: Optional[float],
+        payment_link: Optional[str],
+        reference_number: Optional[str],
+    ) -> Dict[str, Any]:
+        return self.primary.upsert_bill_instance(
+            recurring_id,
+            period_year,
+            period_month,
+            due_date,
+            amount,
+            payment_link,
+            reference_number,
+        )
+
+    def update_bill_instance(self, bill_instance_id: int, updates: Dict[str, Any]) -> None:
+        return self.primary.update_bill_instance(bill_instance_id, updates)
+
+    def get_bill_instance(self, bill_instance_id: int) -> Optional[Dict[str, Any]]:
+        return self.primary.get_bill_instance(bill_instance_id)
+
+    def mark_overdue_bill_instances(self, today_iso: str) -> int:
+        return self.primary.mark_overdue_bill_instances(today_iso)
+
+    def list_due_follow_up_bill_instances(self, today_iso: str) -> list[Dict[str, Any]]:
+        return self.primary.list_due_follow_up_bill_instances(today_iso)
+
+    def create_bill_reminder_if_missing(
+        self,
+        bill_instance_id: int,
+        reminder_offset: int,
+        scheduled_for: str,
     ) -> Optional[int]:
-        return self.primary.create_recurring_event_if_missing(recurring_id, reminder_date, reminder_offset, due_date)
+        return self.primary.create_bill_reminder_if_missing(
+            bill_instance_id,
+            reminder_offset,
+            scheduled_for,
+        )
 
-    def update_recurring_event(self, event_id: int, updates: Dict[str, Any]) -> None:
-        return self.primary.update_recurring_event(event_id, updates)
-
-    def get_recurring_event(self, event_id: int) -> Optional[Dict[str, Any]]:
-        return self.primary.get_recurring_event(event_id)
+    def update_bill_reminder(self, reminder_id: int, updates: Dict[str, Any]) -> None:
+        return self.primary.update_bill_reminder(reminder_id, updates)
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         return self.primary.get_user_chat_id(user_id, channel)

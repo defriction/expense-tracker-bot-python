@@ -8,17 +8,22 @@ from zoneinfo import ZoneInfo
 
 from app.bot.parser import escape_html, format_currency
 from app.core.config import Settings
-from app.services.repositories import DataRepo
 
 
 PENDING_RECURRING_ACTION = "recurring_setup"
+PENDING_RECURRING_OFFER_ACTION = "recurring_offer"
 
 
 def _normalize_text(text: str) -> str:
     return (text or "").strip().lower()
 
 
-def _is_negative(text: str) -> bool:
+def is_affirmative(text: str) -> bool:
+    t = _normalize_text(text)
+    return t in {"si", "sí", "s", "yes", "ok", "dale", "claro", "de una"}
+
+
+def is_negative(text: str) -> bool:
     t = _normalize_text(text)
     return t in {"no", "ninguno", "ninguna", "nah", "na", "n"}
 
@@ -59,6 +64,51 @@ def parse_remind_offsets(text: str) -> list[int]:
     values = [v for v in values if v >= 0]
     values.sort(reverse=True)
     return values
+
+
+def parse_amount(text: str) -> Optional[float]:
+    raw = (text or "").lower().replace("$", "").replace(".", "")
+    raw = re.sub(
+        r"(\d+(?:[.,]\d+)?)\s*(k|luka?s?|luca?s?)\b",
+        lambda m: str(int(float(m.group(1).replace(",", ".")) * 1000)),
+        raw,
+    )
+    raw = re.sub(
+        r"(\d+(?:[.,]\d+)?)\s*(m|palo?s?)\b",
+        lambda m: str(int(float(m.group(1).replace(",", ".")) * 1000000)),
+        raw,
+    )
+    match = re.search(r"\b(\d+(?:[.,]\d+)?)\b", raw)
+    if not match:
+        return None
+    try:
+        return round(float(match.group(1).replace(",", ".")), 2)
+    except ValueError:
+        return None
+
+
+def parse_recurrence(text: str) -> str:
+    t = _normalize_text(text)
+    if re.search(r"\b(quincenal|cada\s+15\s+d[ií]as)\b", t):
+        return "biweekly"
+    if re.search(r"\b(semanal|cada\s+semana|todos\s+los\s+(lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo))\b", t):
+        return "weekly"
+    if re.search(r"\b(trimestral|cada\s+3\s+meses)\b", t):
+        return "quarterly"
+    if re.search(r"\b(anual|cada\s+a[nñ]o)\b", t):
+        return "yearly"
+    return "monthly"
+
+
+def parse_service_name(text: str) -> Optional[str]:
+    t = (text or "").strip()
+    match = re.search(r"pagar\s+(.+)", t, flags=re.IGNORECASE)
+    if not match:
+        return None
+    service = match.group(1)
+    service = re.sub(r"\b(todos?\s+los\s+\d{1,2}|cada\s+mes|mensual|semanal|quincenal|trimestral|anual)\b", "", service, flags=re.IGNORECASE)
+    service = re.sub(r"\s+", " ", service).strip(" .,")
+    return service[:128] if service else None
 
 
 _WEEKDAY_MAP = {
@@ -199,8 +249,15 @@ def _format_recurrence_label(recurrence: str) -> str:
 
 
 def build_setup_summary(recurring: Dict[str, Any], settings: Settings) -> str:
-    amount = format_currency(float(recurring.get("amount", 0)), str(recurring.get("currency", "COP")))
+    amount = "Por definir"
+    try:
+        if float(recurring.get("amount") or 0) > 0:
+            amount = format_currency(float(recurring.get("amount", 0)), str(recurring.get("currency", "COP")))
+    except (TypeError, ValueError):
+        amount = "Por definir"
+
     recurrence = _format_recurrence_label(str(recurring.get("recurrence", "monthly")))
+    service_name = recurring.get("service_name") or recurring.get("normalized_merchant") or recurring.get("description") or "Pago recurrente"
     day = recurring.get("billing_day")
     weekday = recurring.get("billing_weekday")
     detail = ""
@@ -221,7 +278,8 @@ def build_setup_summary(recurring: Dict[str, Any], settings: Settings) -> str:
     offsets = sorted(set(offsets), reverse=True)
     offsets_label = ", ".join([f"-{v}" if v else "0" for v in offsets]) if offsets else "0"
     return (
-        "✅ <b>Recurrente activado</b>\n"
+        "✅ <b>Suscripción guardada</b>\n"
+        f"<b>Servicio:</b> {escape_html(str(service_name))}\n"
         f"<b>Monto:</b> {amount}\n"
         f"<b>Frecuencia:</b> {escape_html(recurrence)}\n"
         f"<b>Vencimiento:</b> {escape_html(detail)}\n"
@@ -259,13 +317,13 @@ def handle_setup_step(step: str, text: str, recurrence: str) -> SetupResult:
         return SetupResult("", updates={"remind_offsets": offsets}, next_step="ask_payment_link")
 
     if step == "ask_payment_link":
-        if _is_negative(text):
+        if is_negative(text):
             return SetupResult("", updates={"payment_link": ""}, next_step="ask_payment_reference")
         link = _extract_link(text) or text.strip()
         return SetupResult("", updates={"payment_link": link[:500]}, next_step="ask_payment_reference")
 
     if step == "ask_payment_reference":
-        if _is_negative(text):
+        if is_negative(text):
             return SetupResult("", updates={"payment_reference": ""}, next_step=None, done=True)
         return SetupResult("", updates={"payment_reference": text.strip()[:500]}, next_step=None, done=True)
 

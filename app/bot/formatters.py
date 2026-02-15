@@ -18,7 +18,8 @@ HELP_MESSAGE = (
     "• <code>le presté 200k a Juan</code>\n"
     "• <code>Juan me pagó 50k</code>\n\n"
     "<b>Recurrentes</b>\n"
-    "• <code>Netflix 39900 mensual</code>\n\n"
+    "• <code>Netflix 39900 mensual</code>\n"
+    "• <code>Recuérdame pagar todos los 5 el internet</code>\n\n"
     "<b>Comandos</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
@@ -174,8 +175,11 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
     ]
     for item in items:
         rid = item.get("id")
-        amount = format_currency(float(item.get("amount", 0)), str(item.get("currency", "COP")))
-        merchant = escape_html(str(item.get("normalized_merchant") or item.get("description") or "Gasto recurrente"))
+        amount_value = float(item.get("amount", 0))
+        amount = "Por definir" if amount_value <= 0 else format_currency(amount_value, str(item.get("currency", "COP")))
+        merchant = escape_html(
+            str(item.get("service_name") or item.get("normalized_merchant") or item.get("description") or "Gasto recurrente")
+        )
         recurrence = escape_html(str(item.get("recurrence") or "monthly"))
         status = escape_html(str(item.get("status") or "pending"))
         next_due = escape_html(str(item.get("next_due") or "—"))
@@ -185,6 +189,8 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
         message.append("")
 
     message.append("Para editar recordatorios: <code>recordatorios ID 3,1,0</code>")
+    message.append("Para actualizar valor: <code>monto ID 45000</code>")
+    message.append("Para cancelar: <code>cancelar ID</code>")
     message.append("Para pausar/activar: <code>pausar ID</code> / <code>activar ID</code>")
     return "\n".join(message).strip()
 

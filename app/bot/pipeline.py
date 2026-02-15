@@ -28,12 +28,18 @@ from app.bot.parser import (
 from app.bot.ui_models import BotAction, BotInput, BotKeyboard, BotMessage
 from app.bot.recurring_flow import (
     PENDING_RECURRING_ACTION,
+    PENDING_RECURRING_OFFER_ACTION,
     build_setup_question,
     build_setup_summary,
     compute_next_due,
     get_today,
     handle_setup_step,
+    is_affirmative,
+    is_negative,
+    parse_amount,
+    parse_recurrence,
     parse_remind_offsets,
+    parse_service_name,
 )
 from app.core.config import Settings
 from app.core.logging import logger
@@ -259,7 +265,7 @@ class AiFlow:
         logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx_id)
         keyboard = _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
         text = format_add_tx_message(tx)
-        recurring_prompt = self.pipeline._start_recurring_setup(tx)
+        recurring_prompt = self.pipeline._offer_recurring_setup(tx)
         if recurring_prompt:
             text = f"{text}\n\n{recurring_prompt}"
         return self.pipeline._make_message(text, keyboard)
@@ -333,6 +339,10 @@ class BotPipeline(PipelineBase):
         if pending_setup and not (command.command and command.command.startswith("/")) and command.route == "ai":
             return [self._handle_recurring_setup(auth_result.user, command.text)]
 
+        pending_offer = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_RECURRING_OFFER_ACTION)
+        if pending_offer and not (command.command and command.command.startswith("/")) and command.route == "ai":
+            return [self._handle_recurring_offer(auth_result.user, command.text, pending_offer)]
+
         pending_edit = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), "recurring_edit_reminders")
         if pending_edit and not (command.command and command.command.startswith("/")) and command.route == "ai":
             return [self._handle_recurring_edit(auth_result.user, command.text, pending_edit)]
@@ -343,12 +353,18 @@ class BotPipeline(PipelineBase):
             return [await self.command_flow.handle_summary(auth_result.user, chat_id, request.channel)]
         if command.route == "recurrings":
             return [await self.command_flow.handle_recurrings(auth_result.user, chat_id)]
+        if command.route == "recurring_create":
+            return [self._start_recurring_from_text(auth_result.user, command.text)]
         if command.route == "download":
             return [await self.command_flow.handle_download(auth_result.user, chat_id)]
         if command.route == "undo":
             return [await self.command_flow.handle_undo(auth_result.user, chat_id)]
         if command.route == "recurring_edit":
             return [self._handle_recurring_edit(auth_result.user, command.text)]
+        if command.route == "recurring_update_amount":
+            return [self._handle_recurring_update_amount(auth_result.user, command.text)]
+        if command.route == "recurring_cancel":
+            return [self._handle_recurring_cancel(auth_result.user, command.text)]
         if command.route == "recurring_toggle":
             return [self._handle_recurring_toggle(auth_result.user, command.text)]
 
@@ -433,7 +449,7 @@ class BotPipeline(PipelineBase):
         except ValueError:
             return None
 
-    def _start_recurring_setup(self, tx: Dict[str, Any]) -> str:
+    def _offer_recurring_setup(self, tx: Dict[str, Any]) -> str:
         if not tx.get("isRecurring"):
             return ""
         recurrence_id = str(tx.get("recurrenceId") or "")
@@ -445,45 +461,153 @@ class BotPipeline(PipelineBase):
         existing = self._get_repo().find_recurring_by_recurrence_id(user_id, recurrence_id)
         if existing and str(existing.get("status")) == "active":
             return ""
+        state = {
+            "tx": {
+                "txId": tx.get("txId"),
+                "date": tx.get("date"),
+                "recurrenceId": tx.get("recurrenceId"),
+                "normalizedMerchant": tx.get("normalizedMerchant"),
+                "description": tx.get("description"),
+                "category": tx.get("category"),
+                "amount": tx.get("amount"),
+                "currency": tx.get("currency"),
+                "recurrence": tx.get("recurrence"),
+            }
+        }
+        self._get_repo().upsert_pending_action(user_id, PENDING_RECURRING_OFFER_ACTION, state)
+        return (
+            "Detecté que este pago parece recurrente.\n"
+            "¿Quieres crear recordatorio de pago para esta suscripción?\n\n"
+            "Responde <code>sí</code> o <code>no</code>."
+        )
+
+    def _create_recurring_from_tx(self, user_id: str, tx: Dict[str, Any]) -> Dict[str, Any]:
+        recurrence_id = str(tx.get("recurrenceId") or "")
+        existing = self._get_repo().find_recurring_by_recurrence_id(user_id, recurrence_id)
+        tx_date = self._parse_iso_date(str(tx.get("date") or "")) or get_today(self.settings)
         if existing:
             if not existing.get("anchor_date"):
-                tx_date = self._parse_iso_date(str(tx.get("date") or "")) or get_today(self.settings)
                 self._get_repo().update_recurring_expense(
                     int(existing.get("id")),
                     {"anchor_date": tx_date.isoformat(), "billing_month": tx_date.month},
                 )
-            pending_state = {
-                "recurring_id": existing["id"],
-                "step": "ask_billing_day",
-                "recurrence": existing.get("recurrence") or "monthly",
+            return existing
+
+        return self._get_repo().create_recurring_expense(
+            {
+                "user_id": user_id,
+                "service_name": tx.get("normalizedMerchant") or tx.get("description") or "Pago recurrente",
+                "recurrence_id": recurrence_id,
+                "normalized_merchant": tx.get("normalizedMerchant"),
+                "description": tx.get("description"),
+                "category": tx.get("category") or "misc",
+                "amount": tx.get("amount") or 0,
+                "currency": "COP",
+                "recurrence": tx.get("recurrence") or "monthly",
+                "billing_month": tx_date.month,
+                "anchor_date": tx_date.isoformat(),
+                "timezone": self.settings.timezone or "America/Bogota",
+                "remind_offsets": [3, 1, 0],
+                "status": "pending",
+                "source_tx_id": tx.get("txId"),
             }
+        )
+
+    def _handle_recurring_offer(self, user: Dict[str, Any], text: str, pending: Dict[str, Any]) -> BotMessage:
+        answer = (text or "").strip()
+        if is_negative(answer):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("Entendido. No crearé recordatorio para ese gasto.")
+        if not is_affirmative(answer):
+            return self._make_message("Responde <code>sí</code> para crear el recordatorio o <code>no</code> para omitir.")
+
+        state = pending.get("state") or {}
+        if isinstance(state, str):
+            try:
+                state = __import__("json").loads(state)
+            except Exception:
+                state = {}
+        tx = state.get("tx") or {}
+        recurring = self._create_recurring_from_tx(str(user.get("userId")), tx)
+        pending_state = {
+            "recurring_id": recurring["id"],
+            "step": "ask_billing_day",
+            "recurrence": recurring.get("recurrence") or "monthly",
+        }
+        self._get_repo().delete_pending_action(int(pending["id"]))
+        self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
+        return self._make_message(build_setup_question("ask_billing_day", pending_state["recurrence"]))
+
+    def _start_recurring_from_text(self, user: Dict[str, Any], text: str) -> BotMessage:
+        content = text or ""
+        recurrence = parse_recurrence(content)
+        service_name = parse_service_name(content) or "Pago recurrente"
+        billing_day = None
+        if recurrence in {"monthly", "quarterly", "yearly"}:
+            billing_day = self._parse_billing_day_from_text(content)
+        recurrence_id = f"REC:{service_name.upper().replace(' ', '_')[:40]}"
+        amount = parse_amount(content) or 0
+        today = get_today(self.settings)
+        existing = self._get_repo().find_recurring_by_recurrence_id(str(user.get("userId")), recurrence_id)
+        if existing:
+            recurring = existing
+            self._get_repo().update_recurring_expense(
+                int(existing["id"]),
+                {
+                    "service_name": service_name,
+                    "recurrence": recurrence,
+                    "billing_day": billing_day,
+                    "amount": amount,
+                    "status": "pending",
+                },
+            )
         else:
-            tx_date = self._parse_iso_date(str(tx.get("date") or "")) or get_today(self.settings)
             recurring = self._get_repo().create_recurring_expense(
                 {
-                    "user_id": user_id,
+                    "user_id": str(user.get("userId")),
+                    "service_name": service_name,
                     "recurrence_id": recurrence_id,
-                    "normalized_merchant": tx.get("normalizedMerchant"),
-                    "description": tx.get("description"),
-                    "category": tx.get("category") or "misc",
-                    "amount": tx.get("amount") or 0,
-                    "currency": tx.get("currency") or "COP",
-                    "recurrence": tx.get("recurrence") or "monthly",
-                    "billing_month": tx_date.month,
-                    "anchor_date": tx_date.isoformat(),
+                    "normalized_merchant": service_name,
+                    "description": service_name,
+                    "category": "utilities",
+                    "amount": amount,
+                    "currency": "COP",
+                    "recurrence": recurrence,
+                    "billing_day": billing_day,
+                    "billing_month": today.month,
+                    "anchor_date": today.isoformat(),
                     "timezone": self.settings.timezone or "America/Bogota",
                     "remind_offsets": [3, 1, 0],
                     "status": "pending",
-                    "source_tx_id": tx.get("txId"),
+                    "source_tx_id": None,
                 }
             )
-            pending_state = {
-                "recurring_id": recurring["id"],
-                "step": "ask_billing_day",
-                "recurrence": recurring.get("recurrence") or "monthly",
-            }
-        self._get_repo().upsert_pending_action(user_id, PENDING_RECURRING_ACTION, pending_state)
-        return build_setup_question("ask_billing_day", pending_state["recurrence"])
+        step = "ask_reminders" if billing_day else "ask_billing_day"
+        pending_state = {
+            "recurring_id": recurring["id"],
+            "step": step,
+            "recurrence": recurrence,
+        }
+        self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
+        intro = (
+            f"Perfecto. Crearé el recordatorio para <b>{service_name}</b> "
+            f"({recurrence})."
+        )
+        return self._make_message(f"{intro}\n\n{build_setup_question(step, recurrence)}")
+
+    def _parse_billing_day_from_text(self, text: str) -> Optional[int]:
+        import re
+
+        match = re.search(r"(?:todos?\\s+los|cada)\\s+(\\d{1,2})\\b", (text or "").lower())
+        if not match:
+            return None
+        try:
+            value = int(match.group(1))
+            if 1 <= value <= 31:
+                return value
+        except ValueError:
+            return None
+        return None
 
     def _handle_recurring_setup(self, user: Dict[str, Any], text: str) -> BotMessage:
         pending = self._get_repo().get_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION)
@@ -570,6 +694,9 @@ class BotPipeline(PipelineBase):
                 )
             return self._make_message("Envía los recordatorios. Ej: <code>3,1,0</code>")
 
+        recurring = self._get_repo().get_recurring_expense(int(recurring_id))
+        if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
+            return self._make_message("No encontrado.")
         self._get_repo().update_recurring_expense(int(recurring_id), {"remind_offsets": offsets})
         if pending:
             self._get_repo().delete_pending_action(int(pending["id"]))
@@ -608,42 +735,79 @@ class BotPipeline(PipelineBase):
 
         return self._make_message("Acción inválida.")
 
+    def _handle_recurring_update_amount(self, user: Dict[str, Any], text: str) -> BotMessage:
+        parts = (text or "").strip().split()
+        if len(parts) < 3:
+            return self._make_message("Uso: <code>monto ID 45000</code>")
+        try:
+            recurring_id = int(parts[1])
+        except ValueError:
+            return self._make_message("ID inválido.")
+        amount = parse_amount(" ".join(parts[2:]))
+        if amount is None or amount < 0:
+            return self._make_message("Monto inválido.")
+        recurring = self._get_repo().get_recurring_expense(recurring_id)
+        if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
+            return self._make_message("No encontrado.")
+        self._get_repo().update_recurring_expense(recurring_id, {"amount": amount})
+        return self._make_message("✅ Valor actualizado.")
+
+    def _handle_recurring_cancel(self, user: Dict[str, Any], text: str) -> BotMessage:
+        parts = (text or "").strip().split()
+        if len(parts) < 2:
+            return self._make_message("Uso: <code>cancelar ID</code>")
+        try:
+            recurring_id = int(parts[1])
+        except ValueError:
+            return self._make_message("ID inválido.")
+        recurring = self._get_repo().get_recurring_expense(recurring_id)
+        if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
+            return self._make_message("No encontrado.")
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        self._get_repo().update_recurring_expense(recurring_id, {"status": "canceled", "canceled_at": now})
+        return self._make_message("🛑 Suscripción cancelada.")
+
     def _handle_recurring_action(self, user: Dict[str, Any], data: str) -> BotMessage:
         parts = (data or "").split(":")
         if len(parts) != 3:
             return self._make_message("Acción inválida.")
         action = parts[1]
         try:
-            event_id = int(parts[2])
+            bill_instance_id = int(parts[2])
         except ValueError:
             return self._make_message("Acción inválida.")
-        event = self._get_repo().get_recurring_event(event_id)
-        if not event or str(event.get("user_id")) != str(user.get("userId")):
+        bill = self._get_repo().get_bill_instance(bill_instance_id)
+        if not bill or str(bill.get("user_id")) != str(user.get("userId")):
             return self._make_message("Acción no autorizada.")
 
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         if action == "paid":
+            if str(bill.get("status")) == "paid":
+                return self._make_message("Este pago ya estaba confirmado.")
             tx_id = generate_tx_id()
-            due_date = event.get("due_date")
+            due_date = bill.get("due_date")
             date_value = due_date.isoformat() if hasattr(due_date, "isoformat") else str(due_date)
+            amount = bill.get("amount")
+            if amount is None:
+                amount = bill.get("recurring_amount") or 0
             tx = {
                 "txId": tx_id,
                 "userId": user.get("userId"),
                 "type": "expense",
                 "transactionKind": "regular",
-                "amount": event.get("amount") or 0,
-                "currency": event.get("currency") or "COP",
-                "category": event.get("category") or "misc",
-                "description": event.get("description") or "Pago recurrente",
+                "amount": amount or 0,
+                "currency": bill.get("currency") or "COP",
+                "category": bill.get("category") or "misc",
+                "description": bill.get("description") or bill.get("service_name") or "Pago recurrente",
                 "date": date_value,
-                "normalizedMerchant": event.get("normalized_merchant") or "",
+                "normalizedMerchant": bill.get("normalized_merchant") or bill.get("service_name") or "",
                 "paymentMethod": "cash",
                 "counterparty": "",
                 "loanRole": "",
                 "loanId": "",
                 "isRecurring": True,
-                "recurrence": event.get("recurrence") or "",
-                "recurrenceId": event.get("recurrence_id") or "",
+                "recurrence": bill.get("recurrence") or "",
+                "recurrenceId": bill.get("recurrence_id") or "",
                 "parseConfidence": 0.9,
                 "parserVersion": "recurring-v1",
                 "source": "recurring",
@@ -655,12 +819,13 @@ class BotPipeline(PipelineBase):
                 "deletedAt": "",
                 "chatId": user.get("chatId"),
             }
-            self._get_repo().append_transaction(tx)
-            self._get_repo().update_recurring_event(
-                event_id,
-                {"status": "paid", "paid_at": now, "tx_id": tx_id},
+            if bool(bill.get("auto_add_transaction", True)):
+                self._get_repo().append_transaction(tx)
+            self._get_repo().update_bill_instance(
+                bill_instance_id,
+                {"status": "paid", "paid_at": now, "tx_id": tx_id, "follow_up_on": None},
             )
-            recurring = self._get_repo().get_recurring_expense(int(event.get("recurring_id")))
+            recurring = self._get_repo().get_recurring_expense(int(bill.get("recurring_id")))
             if recurring:
                 due = self._parse_iso_date(date_value) or get_today(self.settings)
                 next_due = compute_next_due(
@@ -677,9 +842,16 @@ class BotPipeline(PipelineBase):
                 )
             return self._make_message("✅ Pago confirmado y registrado.")
 
-        if action == "skip":
-            self._get_repo().update_recurring_event(event_id, {"status": "skipped", "paid_at": now})
-            return self._make_message("⏳ Pago marcado como no realizado.")
+        if action == "later":
+            follow_up = get_today(self.settings) + __import__("datetime").timedelta(days=1)
+            self._get_repo().update_bill_instance(
+                bill_instance_id,
+                {"status": "pending", "follow_up_on": follow_up.isoformat()},
+            )
+            return self._make_message("⏳ Perfecto, te recordaré de nuevo mañana.")
+
+        if action == "no":
+            return self._make_message("❌ Entendido. Lo dejaré pendiente.")
 
         return self._make_message("Acción inválida.")
 
