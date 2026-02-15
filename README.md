@@ -46,7 +46,7 @@ En `develop` usa `/expense-dev/v1`.
 Opcional:
 
 - Groq API key (para IA y voz)
-- Redis (rate limit compartido)
+- Redis (rate limit compartido) 
 
 ## Variables de entorno
 
