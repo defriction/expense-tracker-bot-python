@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import re
 import time
 import unicodedata
@@ -59,6 +60,16 @@ RECURRING_INVALID_ACTION_MESSAGE = "⚠️ <b>Acción inválida</b>"
 PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 PENDING_CLEAR_ALL_CONFIRM = "clear_all_confirm"
 PENDING_CLEAR_RECURRINGS_CONFIRM = "clear_recurrings_confirm"
+PENDING_ACTION_TTL_MINUTES = 20
+PENDING_EXPIRED_MESSAGE = (
+    "⌛ <b>Esta confirmación expiró</b>\n"
+    "Repite la acción para continuar."
+)
+AI_UNAVAILABLE_FALLBACK_MESSAGE = (
+    "🤖 <b>IA no disponible en este momento</b>\n"
+    "Usa formato rápido: <code>concepto monto</code>\n"
+    "Ejemplo: <code>almuerzo 15000</code>"
+)
 
 ACTION_LIST = BotAction("/list", "🧾 Movimientos")
 ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
@@ -66,6 +77,8 @@ ACTION_UNDO = BotAction("/undo", "↩️ Deshacer")
 ACTION_HELP = BotAction("/help", "ℹ️ Ayuda")
 ACTION_DOWNLOAD = BotAction("/download", "⬇️ Descargar")
 ACTION_RECURRINGS = BotAction("/recurrings", "🔁 Recurrentes")
+ACTION_CONFIRM_YES = BotAction("confirm:yes", "✅ Sí")
+ACTION_CONFIRM_NO = BotAction("confirm:no", "❌ No")
 
 
 def _kb(*rows: list[BotAction]) -> BotKeyboard:
@@ -146,6 +159,14 @@ class OnboardingFlow:
             return self.pipeline._make_message(INVALID_TOKEN_MESSAGE)
 
         repo = self.pipeline._get_repo()
+        existing_user = repo.find_user_by_channel(command.channel, str(external_user_id))
+        if existing_user and str(existing_user.get("status")) == "active":
+            logger.info("Onboarding idempotent success chat_id=%s user_id=%s", chat_id, external_user_id)
+            keyboard = _kb_main()
+            return self.pipeline._make_message(
+                "✅ <b>Tu cuenta ya estaba activa</b>\nPuedes seguir usando el bot normalmente.",
+                keyboard,
+            )
         invite = repo.find_invite(command.invite_token)
         if not invite or str(invite.get("status")) != "unused":
             logger.warning("Onboarding invalid token chat_id=%s user_id=%s", chat_id, external_user_id)
@@ -216,7 +237,7 @@ class CommandFlow:
         active_count = len([tx for tx in txs if not bool(tx.get("isDeleted"))])
         if active_count == 0:
             return self.pipeline._make_message("📭 <b>Sin movimientos</b>\nNo hay transacciones para eliminar.", _kb_main())
-        self.pipeline._get_repo().upsert_pending_action(
+        self.pipeline._upsert_pending_action(
             str(user.get("userId")),
             PENDING_CLEAR_ALL_CONFIRM,
             {"active_count": active_count},
@@ -227,7 +248,7 @@ class CommandFlow:
                 "Esta acción no se puede deshacer con <code>/undo</code>.\n\n"
                 "Responde <code>sí</code> para confirmar o <code>no</code> para cancelar."
             ),
-            _kb_main(),
+            _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
         )
 
     async def handle_clear_recurrings(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
@@ -237,7 +258,7 @@ class CommandFlow:
         clearable_count = len(clearable)
         if clearable_count == 0:
             return self.pipeline._make_message("📭 <b>Sin recurrentes</b>\nNo hay recurrentes activos/pausados para eliminar.", _kb_main())
-        self.pipeline._get_repo().upsert_pending_action(
+        self.pipeline._upsert_pending_action(
             str(user.get("userId")),
             PENDING_CLEAR_RECURRINGS_CONFIRM,
             {"clearable_count": clearable_count},
@@ -248,7 +269,7 @@ class CommandFlow:
                 "Esta acción detiene sus recordatorios futuros.\n\n"
                 "Responde <code>sí</code> para confirmar o <code>no</code> para cancelar."
             ),
-            _kb_main(),
+            _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
         )
 
 
@@ -344,14 +365,14 @@ class AiFlow:
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
 
         if low_confidence:
-            self.pipeline._get_repo().upsert_pending_action(
+            self.pipeline._upsert_pending_action(
                 str(user.get("userId")),
                 PENDING_MULTI_TX_CONFIRM,
                 {"txs": candidates, "source_message_id": str(message_id or ""), "source": source},
             )
             return self.pipeline._make_message(
                 self._build_multi_preview(candidates),
-                _kb_after_save(),
+                _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
             )
 
         finalized = [self._finalize_tx(tx, user, chat_id, message_id, source) for tx in candidates]
@@ -418,6 +439,7 @@ class AiFlow:
         recurring_prompt = self.pipeline._offer_recurring_setup(tx)
         if recurring_prompt:
             text = f"{text}\n\n{recurring_prompt}"
+            keyboard = _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_UNDO, ACTION_LIST], [ACTION_HELP])
         return self.pipeline._make_message(text, keyboard)
 
 
@@ -485,31 +507,15 @@ class BotPipeline(PipelineBase):
         if external_user_id is not None:
             self._get_repo().update_user_last_seen(request.channel, str(external_user_id))
 
-        pending_setup = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_RECURRING_ACTION)
-        if pending_setup and not (command.command and command.command.startswith("/")) and command.route == "ai":
-            return [self._handle_recurring_setup(auth_result.user, command.text)]
-
-        pending_offer = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_RECURRING_OFFER_ACTION)
-        if pending_offer and not (command.command and command.command.startswith("/")) and command.route == "ai":
-            return [self._handle_recurring_offer(auth_result.user, command.text, pending_offer)]
-
-        pending_edit = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), "recurring_edit_reminders")
-        if pending_edit and not (command.command and command.command.startswith("/")) and command.route == "ai":
-            return [self._handle_recurring_edit(auth_result.user, command.text, pending_edit)]
-
-        pending_multi = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_MULTI_TX_CONFIRM)
-        if pending_multi and not (command.command and command.command.startswith("/")) and command.route == "ai":
-            return [self._handle_multi_tx_confirm(auth_result.user, command.text, pending_multi, chat_id, request.message_id, request.channel)]
-
-        pending_clear_all = self._get_repo().get_pending_action(str(auth_result.user.get("userId")), PENDING_CLEAR_ALL_CONFIRM)
-        if pending_clear_all and not (command.command and command.command.startswith("/")) and command.route == "ai":
-            return [self._handle_clear_all_confirm(auth_result.user, command.text, pending_clear_all)]
-        pending_clear_recurrings = self._get_repo().get_pending_action(
-            str(auth_result.user.get("userId")),
-            PENDING_CLEAR_RECURRINGS_CONFIRM,
+        pending_response = self._handle_pending_actions(
+            auth_result.user,
+            command,
+            chat_id,
+            request.message_id,
+            request.channel,
         )
-        if pending_clear_recurrings and not (command.command and command.command.startswith("/")) and command.route == "ai":
-            return [self._handle_clear_recurrings_confirm(auth_result.user, command.text, pending_clear_recurrings)]
+        if pending_response is not None:
+            return [pending_response]
 
         if command.route == "list":
             return [await self.command_flow.handle_list(auth_result.user, chat_id)]
@@ -543,6 +549,8 @@ class BotPipeline(PipelineBase):
         if len(command.text_for_parsing or "") > settings.max_input_chars:
             keyboard = _kb([ACTION_HELP])
             return [self._make_message(LONG_MESSAGE, keyboard)]
+        if not settings.groq_api_key:
+            return [self._make_message(AI_UNAVAILABLE_FALLBACK_MESSAGE, _kb_main())]
         response = await self.ai_flow.handle(
             command,
             auth_result.user,
@@ -605,12 +613,23 @@ class BotPipeline(PipelineBase):
                 return [self._handle_recurring_action(auth_result.user, command.text)]
             else:
                 if command.route == "ai":
+                    pending_response = self._handle_pending_actions(
+                        auth_result.user,
+                        command,
+                        chat_id,
+                        request.message_id,
+                        request.channel,
+                    )
+                    if pending_response is not None:
+                        return [pending_response]
                     natural = self._try_handle_recurring_natural(auth_result.user, command.text or "")
                     if natural is not None:
                         return [natural]
                 if len(command.text_for_parsing or "") > settings.max_input_chars:
                     keyboard = _kb([ACTION_HELP])
                     return [self._make_message(LONG_MESSAGE, keyboard)]
+                if not settings.groq_api_key:
+                    return [self._make_message(AI_UNAVAILABLE_FALLBACK_MESSAGE, _kb_main())]
                 response = await self.ai_flow.handle(
                     command,
                     auth_result.user,
@@ -620,6 +639,75 @@ class BotPipeline(PipelineBase):
                 )
                 return [response]
         return []
+
+    @staticmethod
+    def _pending_allowed(command) -> bool:
+        return command.route == "ai" and not (command.command and command.command.startswith("/"))
+
+    def _upsert_pending_action(
+        self,
+        user_id: str,
+        action_type: str,
+        state: Dict[str, Any],
+        ttl_minutes: int = PENDING_ACTION_TTL_MINUTES,
+    ) -> None:
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=max(1, ttl_minutes))
+        self._get_repo().upsert_pending_action(user_id, action_type, state, expires_at=expires_at.isoformat())
+
+    @staticmethod
+    def _parse_pending_expires_at(pending: Dict[str, Any]) -> Optional[datetime]:
+        value = pending.get("expires_at")
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, str) and value:
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
+    def _get_pending_action_state(self, user_id: str, action_type: str) -> tuple[Optional[Dict[str, Any]], bool]:
+        pending = self._get_repo().get_pending_action(user_id, action_type)
+        if not pending:
+            return None, False
+        expires_at = self._parse_pending_expires_at(pending)
+        if expires_at and expires_at <= datetime.now(timezone.utc):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return None, True
+        return pending, False
+
+    def _handle_pending_actions(
+        self,
+        user: Dict[str, Any],
+        command,
+        chat_id: Optional[int],
+        message_id: Optional[str],
+        channel: str,
+    ) -> Optional[BotMessage]:
+        if not self._pending_allowed(command):
+            return None
+        user_id = str(user.get("userId"))
+        checks = [
+            (PENDING_RECURRING_ACTION, lambda p: self._handle_recurring_setup(user, command.text)),
+            (PENDING_RECURRING_OFFER_ACTION, lambda p: self._handle_recurring_offer(user, command.text, p)),
+            ("recurring_edit_reminders", lambda p: self._handle_recurring_edit(user, command.text, p)),
+            (
+                PENDING_MULTI_TX_CONFIRM,
+                lambda p: self._handle_multi_tx_confirm(user, command.text, p, chat_id, message_id, channel),
+            ),
+            (PENDING_CLEAR_ALL_CONFIRM, lambda p: self._handle_clear_all_confirm(user, command.text, p)),
+            (
+                PENDING_CLEAR_RECURRINGS_CONFIRM,
+                lambda p: self._handle_clear_recurrings_confirm(user, command.text, p),
+            ),
+        ]
+        for action_type, handler in checks:
+            pending, expired = self._get_pending_action_state(user_id, action_type)
+            if expired:
+                return self._make_message(PENDING_EXPIRED_MESSAGE, _kb_main())
+            if pending:
+                return handler(pending)
+        return None
 
     def _parse_iso_date(self, value: str):
         if not value:
@@ -663,7 +751,7 @@ class BotPipeline(PipelineBase):
                 "recurrence": tx.get("recurrence"),
             }
         }
-        self._get_repo().upsert_pending_action(user_id, PENDING_RECURRING_OFFER_ACTION, state)
+        self._upsert_pending_action(user_id, PENDING_RECURRING_OFFER_ACTION, state)
         return (
             "Detecté que este pago parece recurrente.\n"
             "¿Quieres crear recordatorio de pago para esta suscripción?\n\n"
@@ -686,7 +774,7 @@ class BotPipeline(PipelineBase):
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para guardar o <code>no</code> para cancelar.",
-                _kb_main(),
+                _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
             )
 
         state = pending.get("state") or {}
@@ -719,7 +807,7 @@ class BotPipeline(PipelineBase):
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para eliminar todo o <code>no</code> para cancelar.",
-                _kb_main(),
+                _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
             )
 
         deleted_count = self._get_repo().mark_all_transactions_deleted(str(user.get("userId")))
@@ -739,7 +827,7 @@ class BotPipeline(PipelineBase):
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para cancelar todos los recurrentes o <code>no</code> para mantenerlos.",
-                _kb_main(),
+                _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
             )
 
         items = self._get_repo().list_recurring_expenses(str(user.get("userId")))
@@ -954,7 +1042,7 @@ class BotPipeline(PipelineBase):
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para crear el recordatorio o <code>no</code> para omitir.",
-                _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+                _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP]),
             )
 
         state = pending.get("state") or {}
@@ -971,7 +1059,7 @@ class BotPipeline(PipelineBase):
             "recurrence": recurring.get("recurrence") or "monthly",
         }
         self._get_repo().delete_pending_action(int(pending["id"]))
-        self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
+        self._upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
         return self._make_message(
             build_setup_question("ask_billing_day", pending_state["recurrence"]),
             _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
@@ -1027,7 +1115,7 @@ class BotPipeline(PipelineBase):
             "step": step,
             "recurrence": recurrence,
         }
-        self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
+        self._upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
         intro = f"✅ Perfecto. Voy a configurar el recordatorio para <b>{service_name}</b> ({recurrence})."
         return self._make_message(
             f"{intro}\n\n{build_setup_question(step, recurrence)}",
@@ -1037,7 +1125,7 @@ class BotPipeline(PipelineBase):
     def _parse_billing_day_from_text(self, text: str) -> Optional[int]:
         import re
 
-        match = re.search(r"(?:todos?\\s+los|cada)\\s+(\\d{1,2})\\b", (text or "").lower())
+        match = re.search(r"(?:todos?\s+los|cada)\s+(\d{1,2})\b", (text or "").lower())
         if not match:
             return None
         try:
@@ -1093,7 +1181,7 @@ class BotPipeline(PipelineBase):
 
         next_step = result.next_step or step
         state["step"] = next_step
-        self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, state)
+        self._upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, state)
         return self._make_message(build_setup_question(next_step, recurrence), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_edit(self, user: Dict[str, Any], text: str, pending: Optional[Dict[str, Any]] = None) -> BotMessage:
@@ -1126,7 +1214,7 @@ class BotPipeline(PipelineBase):
         offsets = parse_remind_offsets(offsets_text)
         if not offsets:
             if not pending:
-                self._get_repo().upsert_pending_action(
+                self._upsert_pending_action(
                     str(user.get("userId")),
                     "recurring_edit_reminders",
                     {"recurring_id": recurring_id},

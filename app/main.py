@@ -16,10 +16,13 @@ app = FastAPI()
 telegram_app = build_telegram_app(settings.bot_token, get_handlers(), error_handler)
 pipeline = PipelineFactory(settings).build()
 
-evolution_client = EvolutionClient(settings)
+evolution_client = None
+if settings.evolution_api_url and settings.evolution_api_key and settings.evolution_instance_name:
+    evolution_client = EvolutionClient(settings)
 
 app.include_router(build_telegram_router(telegram_app, settings))
-app.include_router(build_evolution_router(pipeline, evolution_client, settings))
+if evolution_client:
+    app.include_router(build_evolution_router(pipeline, evolution_client, settings))
 app.include_router(build_admin_router(pipeline._get_repo(), settings))
 
 
@@ -30,7 +33,7 @@ async def on_startup() -> None:
     scheduler.add_job(
         process_recurring_reminders,
         CronTrigger(hour=9, minute=0),
-        args=[pipeline._get_repo(), telegram_app.bot, settings],
+        args=[pipeline._get_repo(), telegram_app.bot, settings, evolution_client],
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,

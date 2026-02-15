@@ -76,7 +76,13 @@ class DataRepo(Protocol):
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]: ...
 
-    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]: ...
+    def upsert_pending_action(
+        self,
+        user_id: str,
+        action_type: str,
+        state: Dict[str, Any],
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]: ...
 
     def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]: ...
 
@@ -211,8 +217,14 @@ class CompositeRepo:
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         return self.primary.get_user_chat_id(user_id, channel)
 
-    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]:
-        return self.primary.upsert_pending_action(user_id, action_type, state)
+    def upsert_pending_action(
+        self,
+        user_id: str,
+        action_type: str,
+        state: Dict[str, Any],
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.primary.upsert_pending_action(user_id, action_type, state, expires_at)
 
     def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]:
         return self.primary.get_pending_action(user_id, action_type)

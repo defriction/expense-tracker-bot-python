@@ -623,20 +623,32 @@ class PostgresRepo:
             row = session.execute(sql, {"user_id": user_id, "channel": channel}).mappings().first()
             return row["external_chat_id"] if row else None
 
-    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    def upsert_pending_action(
+        self,
+        user_id: str,
+        action_type: str,
+        state: Dict[str, Any],
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
         now = self._now_iso()
         with self._session() as session:
             row = session.execute(
                 text(
                     """
-                    insert into bot_pending_actions (user_id, action_type, state, created_at, updated_at)
-                    values (:user_id, :action_type, cast(:state as jsonb), :now, :now)
+                    insert into bot_pending_actions (user_id, action_type, state, expires_at, created_at, updated_at)
+                    values (:user_id, :action_type, cast(:state as jsonb), :expires_at, :now, :now)
                     on conflict (user_id, action_type)
-                    do update set state = excluded.state, updated_at = excluded.updated_at
+                    do update set state = excluded.state, expires_at = excluded.expires_at, updated_at = excluded.updated_at
                     returning *
                     """
                 ),
-                {"user_id": user_id, "action_type": action_type, "state": json.dumps(state), "now": now},
+                {
+                    "user_id": user_id,
+                    "action_type": action_type,
+                    "state": json.dumps(state),
+                    "expires_at": expires_at,
+                    "now": now,
+                },
             ).mappings().first()
             session.commit()
             return dict(row)
@@ -774,8 +786,14 @@ class ResilientPostgresRepo:
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         return self.repo.get_user_chat_id(user_id, channel)
 
-    def upsert_pending_action(self, user_id: str, action_type: str, state: Dict[str, Any]) -> Dict[str, Any]:
-        return self.repo.upsert_pending_action(user_id, action_type, state)
+    def upsert_pending_action(
+        self,
+        user_id: str,
+        action_type: str,
+        state: Dict[str, Any],
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.repo.upsert_pending_action(user_id, action_type, state, expires_at)
 
     def get_pending_action(self, user_id: str, action_type: str) -> Optional[Dict[str, Any]]:
         return self.repo.get_pending_action(user_id, action_type)

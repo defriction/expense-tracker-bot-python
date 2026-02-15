@@ -20,12 +20,16 @@ def _normalize_text(text: str) -> str:
 
 def is_affirmative(text: str) -> bool:
     t = _normalize_text(text)
-    return t in {"si", "sí", "s", "yes", "ok", "dale", "claro", "de una"}
+    if t in {"si", "sí", "s", "yes", "ok", "dale", "claro", "de una", "confirm:yes", "confirm_yes"}:
+        return True
+    return bool(re.search(r"\b(si|sí|yes|ok)\b", t))
 
 
 def is_negative(text: str) -> bool:
     t = _normalize_text(text)
-    return t in {"no", "ninguno", "ninguna", "nah", "na", "n"}
+    if t in {"no", "ninguno", "ninguna", "nah", "na", "n", "confirm:no", "confirm_no"}:
+        return True
+    return bool(re.search(r"\bno\b", t))
 
 
 def _extract_link(text: str) -> Optional[str]:

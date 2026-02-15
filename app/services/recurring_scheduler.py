@@ -5,16 +5,24 @@ from typing import Any, Dict, Iterable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.bot.ui_models import BotAction, BotKeyboard, BotMessage
+from app.channels.evolution_adapter import send_evolution_message
 from app.bot.parser import escape_html, format_currency
 from app.bot.recurring_flow import compute_next_due, get_today
 from app.core.config import Settings
 from app.core.logging import logger
+from app.services.evolution import EvolutionClient
 from app.services.repositories import DataRepo
 
 
 def _build_keyboard(actions: Iterable[tuple[str, str]]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=label, callback_data=action_id) for action_id, label in actions]]
     return InlineKeyboardMarkup(rows)
+
+
+def _build_bot_message(text: str, actions: Iterable[tuple[str, str]]) -> BotMessage:
+    rows = [[BotAction(action_id, label) for action_id, label in actions]]
+    return BotMessage(text=text, keyboard=BotKeyboard(rows=rows))
 
 
 def _reminder_text(recurring: Dict[str, Any], due_date: date, offset: int) -> str:
@@ -89,6 +97,7 @@ async def process_recurring_reminders(
     repo: DataRepo,
     bot,
     settings: Settings,
+    evolution_client: Optional[EvolutionClient] = None,
 ) -> None:
     today = get_today(settings)
     repo.mark_overdue_bill_instances(today.isoformat())
@@ -103,8 +112,6 @@ async def process_recurring_reminders(
             if not reminder_id:
                 continue
             chat_id = repo.get_user_chat_id(str(bill["user_id"]), "telegram")
-            if not chat_id:
-                continue
             recurring = {
                 "amount": bill.get("amount"),
                 "currency": bill.get("currency"),
@@ -119,18 +126,41 @@ async def process_recurring_reminders(
                 (f"recurring:later:{bill['id']}", "⏳ Después"),
                 (f"recurring:no:{bill['id']}", "❌ No"),
             ]
-            await bot.send_message(
-                chat_id=int(chat_id),
-                text=_reminder_text(recurring, due, 0),
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                reply_markup=_build_keyboard(actions),
-            )
-            repo.update_bill_instance(int(bill["id"]), {"follow_up_on": None})
-            repo.update_bill_reminder(
-                int(reminder_id),
-                {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()},
-            )
+            text = _reminder_text(recurring, due, 0)
+            delivered = False
+
+            if chat_id:
+                try:
+                    await bot.send_message(
+                        chat_id=int(chat_id),
+                        text=text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=_build_keyboard(actions),
+                    )
+                    delivered = True
+                except Exception as exc:
+                    logger.warning("Recurring follow-up telegram send failed: %s", exc)
+
+            if evolution_client:
+                evolution_chat_id = repo.get_user_chat_id(str(bill["user_id"]), "evolution")
+                if evolution_chat_id:
+                    try:
+                        await send_evolution_message(
+                            evolution_client,
+                            str(evolution_chat_id),
+                            _build_bot_message(text, actions),
+                        )
+                        delivered = True
+                    except Exception as exc:
+                        logger.warning("Recurring follow-up evolution send failed: %s", exc)
+
+            if delivered:
+                repo.update_bill_instance(int(bill["id"]), {"follow_up_on": None})
+                repo.update_bill_reminder(
+                    int(reminder_id),
+                    {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()},
+                )
         except Exception as exc:
             logger.warning("Recurring follow-up reminder failed: %s", exc)
 
@@ -183,24 +213,44 @@ async def process_recurring_reminders(
                     continue
 
                 chat_id = repo.get_user_chat_id(str(recurring["user_id"]), "telegram")
-                if not chat_id:
-                    continue
 
                 actions = [
                     (f"recurring:paid:{bill_instance['id']}", "✅ Sí"),
                     (f"recurring:later:{bill_instance['id']}", "⏳ Después"),
                     (f"recurring:no:{bill_instance['id']}", "❌ No"),
                 ]
-                await bot.send_message(
-                    chat_id=int(chat_id),
-                    text=_reminder_text(recurring, next_due, int(offset)),
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                    reply_markup=_build_keyboard(actions),
-                )
-                repo.update_bill_reminder(
-                    int(reminder_id),
-                    {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()},
-                )
+                text = _reminder_text(recurring, next_due, int(offset))
+                delivered = False
+                if chat_id:
+                    try:
+                        await bot.send_message(
+                            chat_id=int(chat_id),
+                            text=text,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                            reply_markup=_build_keyboard(actions),
+                        )
+                        delivered = True
+                    except Exception as exc:
+                        logger.warning("Recurring telegram send failed: %s", exc)
+
+                if evolution_client:
+                    evolution_chat_id = repo.get_user_chat_id(str(recurring["user_id"]), "evolution")
+                    if evolution_chat_id:
+                        try:
+                            await send_evolution_message(
+                                evolution_client,
+                                str(evolution_chat_id),
+                                _build_bot_message(text, actions),
+                            )
+                            delivered = True
+                        except Exception as exc:
+                            logger.warning("Recurring evolution send failed: %s", exc)
+
+                if delivered:
+                    repo.update_bill_reminder(
+                        int(reminder_id),
+                        {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()},
+                    )
         except Exception as exc:
             logger.warning("Recurring reminder failed: %s", exc)
