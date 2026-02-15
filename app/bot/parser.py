@@ -201,6 +201,10 @@ def parse_command(
             route = "clear_all"
         elif re.search(r"^(borrar|eliminar|limpiar)\s+recurrentes\b", lower):
             route = "clear_recurrings"
+        elif re.search(r"\b(borrar|eliminar|limpiar|cancelar)\b.*\b(todos?|todas?)\b.*\b(recurrentes?|suscripciones?)\b", lower):
+            route = "clear_recurrings"
+        elif re.search(r"\b(recurrentes?|suscripciones?)\b.*\b(borrar|eliminar|limpiar|cancelar)\b", lower):
+            route = "clear_recurrings"
 
     return ParsedCommand(
         route=route,

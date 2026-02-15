@@ -144,6 +144,8 @@ Notas:
 - `recordatorios 12 3,1,0`
 - `monto 12 45000`
 - `pausar 12` / `activar 12` / `cancelar 12`
+- `pausa netflix`
+- `sube luz a 70k`
 - `/clear_recurrings`
 
 Si detecta varios montos en un solo mensaje, intentará crear múltiples transacciones.

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import re
 import time
+import unicodedata
 from typing import Any, Dict, Optional
 
 from app.bot.formatters import (
@@ -534,6 +535,10 @@ class BotPipeline(PipelineBase):
             return [self._handle_recurring_cancel(auth_result.user, command.text)]
         if command.route == "recurring_toggle":
             return [self._handle_recurring_toggle(auth_result.user, command.text)]
+        if command.route == "ai":
+            natural = self._try_handle_recurring_natural(auth_result.user, command.text or "")
+            if natural is not None:
+                return [natural]
 
         if len(command.text_for_parsing or "") > settings.max_input_chars:
             keyboard = _kb([ACTION_HELP])
@@ -599,6 +604,10 @@ class BotPipeline(PipelineBase):
             elif command.route == "recurring_action":
                 return [self._handle_recurring_action(auth_result.user, command.text)]
             else:
+                if command.route == "ai":
+                    natural = self._try_handle_recurring_natural(auth_result.user, command.text or "")
+                    if natural is not None:
+                        return [natural]
                 if len(command.text_for_parsing or "") > settings.max_input_chars:
                     keyboard = _kb([ACTION_HELP])
                     return [self._make_message(LONG_MESSAGE, keyboard)]
@@ -746,6 +755,164 @@ class BotPipeline(PipelineBase):
             f"🗑️ <b>Listo</b>\nCancelé <b>{len(clearable)}</b> recurrentes.",
             _kb_main(),
         )
+
+    @staticmethod
+    def _norm_match(text: str) -> str:
+        raw = (text or "").strip().lower()
+        raw = unicodedata.normalize("NFD", raw)
+        raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Mn")
+        raw = re.sub(r"\s+", " ", raw)
+        return raw
+
+    def _find_recurring_by_text(self, user_id: str, text: str) -> list[Dict[str, Any]]:
+        items = self._get_repo().list_recurring_expenses(user_id)
+        norm_text = self._norm_match(text)
+        scored: list[tuple[int, Dict[str, Any]]] = []
+        for item in items:
+            name = str(item.get("service_name") or item.get("normalized_merchant") or item.get("description") or "").strip()
+            if not name:
+                continue
+            norm_name = self._norm_match(name)
+            if not norm_name:
+                continue
+            score = 0
+            if norm_name in norm_text:
+                score += len(norm_name) + 20
+            tokens = [tok for tok in norm_name.split() if len(tok) >= 4]
+            for tok in tokens:
+                if tok in norm_text:
+                    score += len(tok)
+            if score > 0:
+                scored.append((score, item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if not scored:
+            return []
+        top = scored[0][0]
+        return [item for score, item in scored if score == top]
+
+    @staticmethod
+    def _extract_explicit_id(text: str) -> Optional[int]:
+        match = re.search(r"\bid\s*#?\s*(\d+)\b", text or "", flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _format_amount_for_command(amount: float) -> str:
+        if float(amount).is_integer():
+            return str(int(amount))
+        return str(round(float(amount), 2))
+
+    def _resolve_recurring_target(
+        self,
+        user: Dict[str, Any],
+        text: str,
+        *,
+        allow_numeric_fallback: bool = False,
+    ) -> tuple[Optional[int], Optional[BotMessage]]:
+        explicit_id = self._extract_explicit_id(text)
+        if explicit_id is not None:
+            recurring = self._get_repo().get_recurring_expense(explicit_id)
+            if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
+                return None, self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return explicit_id, None
+
+        if allow_numeric_fallback:
+            numerics = re.findall(r"\b\d+\b", text or "")
+            if len(numerics) == 1:
+                try:
+                    candidate = int(numerics[0])
+                except ValueError:
+                    candidate = 0
+                if candidate > 0:
+                    recurring = self._get_repo().get_recurring_expense(candidate)
+                    if recurring and str(recurring.get("user_id")) == str(user.get("userId")):
+                        return candidate, None
+
+        matches = self._find_recurring_by_text(str(user.get("userId")), text or "")
+        if len(matches) == 1:
+            return int(matches[0]["id"]), None
+        if len(matches) > 1:
+            options = ", ".join([f"<code>{item.get('id')}</code>" for item in matches[:5]])
+            return None, self._make_message(
+                "⚠️ Encontré más de un recurrente que coincide.\n"
+                f"IDs posibles: {options}\n"
+                "Escríbelo con ID. Ej: <code>monto ID 45000</code>.",
+                _kb([ACTION_RECURRINGS, ACTION_HELP]),
+            )
+        return None, self._make_message(
+            "⚠️ No pude identificar cuál recurrente quieres editar.\n"
+            "Primero usa <code>/recurrings</code> y luego envía el ID.",
+            _kb([ACTION_RECURRINGS, ACTION_HELP]),
+        )
+
+    def _try_handle_recurring_natural(self, user: Dict[str, Any], text: str) -> Optional[BotMessage]:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        norm = self._norm_match(raw)
+        user_id = str(user.get("userId"))
+        has_explicit_id = self._extract_explicit_id(raw) is not None
+        matched_targets = self._find_recurring_by_text(user_id, raw)
+        has_target_match = bool(matched_targets)
+        has_recurring_hint = bool(re.search(r"\b(recurrente|recurrentes|suscripcion|suscripciones|recordatorio|recordatorios)\b", norm))
+
+        if re.search(r"\b(recordame|recuerdame|avisame)\b", norm) and re.search(
+            r"\b(pagar|pago|factura|recibo|cobro|suscripcion)\b",
+            norm,
+        ):
+            return self._start_recurring_from_text(user, raw)
+
+        if re.search(r"\b(recordatorios?|avisos?)\b", norm):
+            offsets = parse_remind_offsets(raw)
+            if offsets:
+                if not (has_explicit_id or has_target_match or has_recurring_hint):
+                    return None
+                recurring_id, err = self._resolve_recurring_target(user, raw)
+                if err:
+                    return err
+                offsets_text = ",".join([str(v) for v in offsets])
+                return self._handle_recurring_edit(user, f"recordatorios {recurring_id} {offsets_text}")
+
+        if parse_amount(raw) is not None and re.search(r"\b(monto|valor|sube|subir|baja|bajar|ajusta|ajustar|cambia|cambiar|actualiza|actualizar)\b", norm):
+            if not (has_explicit_id or has_target_match or has_recurring_hint):
+                return None
+            recurring_id, err = self._resolve_recurring_target(user, raw)
+            if err:
+                return err
+            amount = parse_amount(raw)
+            if amount is None:
+                return self._make_message("⚠️ <b>Monto inválido</b>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._handle_recurring_update_amount(user, f"monto {recurring_id} {self._format_amount_for_command(amount)}")
+
+        if re.search(r"\b(cancela|cancelar|elimina|eliminar)\b", norm):
+            if not (has_explicit_id or has_target_match or has_recurring_hint):
+                return None
+            recurring_id, err = self._resolve_recurring_target(user, raw, allow_numeric_fallback=True)
+            if err:
+                return err
+            return self._handle_recurring_cancel(user, f"cancelar {recurring_id}")
+
+        if re.search(r"\b(pausa|pausar|deten|detener|frena|desactiva|desactivar)\b", norm):
+            if not (has_explicit_id or has_target_match or has_recurring_hint):
+                return None
+            recurring_id, err = self._resolve_recurring_target(user, raw, allow_numeric_fallback=True)
+            if err:
+                return err
+            return self._handle_recurring_toggle(user, f"pausar {recurring_id}")
+
+        if re.search(r"\b(activa|activar|reanuda|reanudar)\b", norm):
+            if not (has_explicit_id or has_target_match or has_recurring_hint):
+                return None
+            recurring_id, err = self._resolve_recurring_target(user, raw, allow_numeric_fallback=True)
+            if err:
+                return err
+            return self._handle_recurring_toggle(user, f"activar {recurring_id}")
+
+        return None
 
     def _create_recurring_from_tx(self, user_id: str, tx: Dict[str, Any]) -> Dict[str, Any]:
         recurrence_id = str(tx.get("recurrenceId") or "")

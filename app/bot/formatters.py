@@ -23,6 +23,7 @@ HELP_MESSAGE = (
     "• <code>/recurrings</code> (ver IDs)\n"
     "• <code>recordatorios 12 3,1,0</code>\n"
     "• <code>monto 12 45000</code>\n"
+    "• <code>pausa netflix</code> / <code>sube luz a 70k</code> (lenguaje natural)\n"
     "• <code>pausar 12</code> / <code>activar 12</code> / <code>cancelar 12</code>\n\n"
     "<b>Múltiples movimientos</b>\n"
     "• <code>me gasté 5k en comida y 60k en ropa</code>\n"
