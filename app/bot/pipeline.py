@@ -50,8 +50,11 @@ from app.core.logging import logger
 from app.services.groq import GroqClient, extract_json
 from app.services.repositories import DataRepo
 
-INVALID_TOKEN_MESSAGE = "Token de invitación inválido o expirado."
-INVALID_TX_MESSAGE = "Monto inválido o categoría faltante. Por favor intenta de nuevo."
+INVALID_TOKEN_MESSAGE = "🔒 <b>Token inválido</b>\nEl token de invitación no es válido o ya expiró."
+INVALID_TX_MESSAGE = "⚠️ <b>No pude guardar el movimiento</b>\nMonto inválido o categoría faltante. Inténtalo de nuevo."
+RECURRING_NOT_FOUND_MESSAGE = "⚠️ <b>No encontrado</b>\nNo encontré un recurrente con ese ID."
+RECURRING_INVALID_ID_MESSAGE = "⚠️ <b>ID inválido</b>\nEl ID debe ser un número."
+RECURRING_INVALID_ACTION_MESSAGE = "⚠️ <b>Acción inválida</b>"
 PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 
 ACTION_LIST = BotAction("/list", "🧾 Movimientos")
@@ -64,6 +67,14 @@ ACTION_RECURRINGS = BotAction("/recurrentes", "🔁 Recurrentes")
 
 def _kb(*rows: list[BotAction]) -> BotKeyboard:
     return BotKeyboard(rows=[row for row in rows if row])
+
+
+def _kb_main() -> BotKeyboard:
+    return _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_RECURRINGS, ACTION_DOWNLOAD], [ACTION_HELP])
+
+
+def _kb_after_save() -> BotKeyboard:
+    return _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_RECURRINGS], [ACTION_HELP])
 
 
 class PipelineBase:
@@ -141,7 +152,7 @@ class OnboardingFlow:
         repo.create_user(user_id, command.channel, str(external_user_id), str(chat_id) if chat_id is not None else None)
         repo.mark_invite_used(command.invite_token, user_id)
         logger.info("Onboarding success chat_id=%s user_id=%s", chat_id, external_user_id)
-        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        keyboard = _kb_main()
         return self.pipeline._make_message(ONBOARDING_SUCCESS_MESSAGE, keyboard)
 
 
@@ -152,20 +163,20 @@ class CommandFlow:
     async def handle_list(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("List command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
-        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
+        keyboard = _kb([ACTION_UNDO, ACTION_SUMMARY], [ACTION_RECURRINGS, ACTION_DOWNLOAD], [ACTION_HELP])
         return self.pipeline._make_message(format_list_message(txs), keyboard)
 
     async def handle_summary(self, user: Dict[str, Any], chat_id: Optional[int], channel: str) -> BotMessage:
         logger.info("Summary command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
-        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_DOWNLOAD, ACTION_HELP])
+        keyboard = _kb([ACTION_LIST, ACTION_UNDO], [ACTION_RECURRINGS, ACTION_DOWNLOAD], [ACTION_HELP])
         compact = channel in {"evolution", "whatsapp"}
         return self.pipeline._make_message(format_summary_message(txs, compact=compact), keyboard)
 
     async def handle_recurrings(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Recurrings command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         items = self.pipeline._get_repo().list_recurring_expenses(user.get("userId"))
-        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        keyboard = _kb_main()
         return self.pipeline._make_message(format_recurring_list_message(items), keyboard)
 
     async def handle_download(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
@@ -173,12 +184,12 @@ class CommandFlow:
         txs = self.pipeline._get_repo().list_transactions(user.get("userId"))
         txs = [tx for tx in txs if not tx.get("isDeleted")]
         if not txs:
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+            keyboard = _kb_main()
             return self.pipeline._make_message("📭 <b>Sin movimientos</b>\nNo hay transacciones para descargar.", keyboard)
 
         document_bytes, filename = build_transactions_xlsx(txs, self.pipeline.settings.timezone or "America/Bogota")
         text = f"📎 <b>Exportación lista</b>\nTransacciones: <b>{len(txs)}</b>"
-        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        keyboard = _kb_main()
         return self.pipeline._make_message(
             text,
             keyboard,
@@ -193,7 +204,7 @@ class CommandFlow:
         picked = BotPipeline._pick_latest(txs)
         if picked.get("ok"):
             self.pipeline._get_repo().mark_transaction_deleted(str(picked["txId"]))
-        keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP])
+        keyboard = _kb_main()
         return self.pipeline._make_message(format_undo_message(picked), keyboard)
 
 
@@ -274,7 +285,7 @@ class AiFlow:
             if str(tx.get("type") or "").lower() not in {"income", "expense"}:
                 tx["type"] = default_type
             if float(tx.get("amount", 0)) <= 0:
-                keyboard = _kb([ACTION_DOWNLOAD, ACTION_HELP])
+                keyboard = _kb_main()
                 return self.pipeline._make_message(
                     "No pude validar todos los montos en el mensaje. Envíalo separado o con formato más claro.",
                     keyboard,
@@ -296,7 +307,7 @@ class AiFlow:
             )
             return self.pipeline._make_message(
                 self._build_multi_preview(candidates),
-                _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+                _kb_after_save(),
             )
 
         finalized = [self._finalize_tx(tx, user, chat_id, message_id, source) for tx in candidates]
@@ -304,7 +315,7 @@ class AiFlow:
         logger.info("AI multi tx saved chat_id=%s user_id=%s count=%s", chat_id, user.get("userId"), len(finalized))
         return self.pipeline._make_message(
             format_multi_tx_saved_message(finalized),
-            _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+            _kb_after_save(),
         )
 
     async def handle(
@@ -337,7 +348,7 @@ class AiFlow:
 
         intent = str(tx.get("intent", "add_tx")).lower()
         if intent == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
+            keyboard = _kb_main()
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
         if intent == "list":
             return await self.pipeline.command_flow.handle_list(user, chat_id)
@@ -347,18 +358,18 @@ class AiFlow:
             return await self.pipeline.command_flow.handle_download(user, chat_id)
 
         if intent != "add_tx":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
+            keyboard = _kb_main()
             return self.pipeline._make_message(HELP_MESSAGE, keyboard)
 
         if float(tx.get("amount", 0)) <= 0 or not str(tx.get("category")):
             logger.warning("AI invalid tx chat_id=%s user_id=%s", chat_id, user.get("userId"))
-            keyboard = _kb([ACTION_DOWNLOAD, ACTION_HELP])
+            keyboard = _kb_main()
             return self.pipeline._make_message(INVALID_TX_MESSAGE, keyboard)
 
         tx = self._finalize_tx(tx, user, chat_id, message_id, source)
         self.pipeline._get_repo().append_transaction(tx)
         logger.info("AI tx saved chat_id=%s user_id=%s tx_id=%s", chat_id, user.get("userId"), tx["txId"])
-        keyboard = _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
+        keyboard = _kb_after_save()
         text = format_add_tx_message(tx)
         recurring_prompt = self.pipeline._offer_recurring_setup(tx)
         if recurring_prompt:
@@ -407,7 +418,7 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
+            keyboard = _kb_main()
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route == "non_text":
@@ -496,7 +507,7 @@ class BotPipeline(PipelineBase):
             return [await self.onboarding_flow.handle(command)]
 
         if command.route == "help":
-            keyboard = _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_DOWNLOAD, ACTION_HELP])
+            keyboard = _kb_main()
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
         if command.route in {"list", "summary", "download", "undo", "ai", "recurring_action", "recurrings"}:
@@ -592,11 +603,11 @@ class BotPipeline(PipelineBase):
         answer = (text or "").strip()
         if is_negative(answer):
             self._get_repo().delete_pending_action(int(pending["id"]))
-            return self._make_message("Entendido. No guardé esos movimientos.", _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]))
+            return self._make_message("✅ Entendido. No guardé esos movimientos.", _kb_main())
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para guardar o <code>no</code> para cancelar.",
-                _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]),
+                _kb_main(),
             )
 
         state = pending.get("state") or {}
@@ -608,17 +619,17 @@ class BotPipeline(PipelineBase):
         txs = state.get("txs") or []
         if not isinstance(txs, list) or not txs:
             self._get_repo().delete_pending_action(int(pending["id"]))
-            return self._make_message("No encontré movimientos pendientes para confirmar.", _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]))
+            return self._make_message("⚠️ No encontré movimientos pendientes para confirmar.", _kb_main())
 
         finalized = [self.ai_flow._finalize_tx(dict(tx), user, chat_id, message_id, source) for tx in txs if isinstance(tx, dict)]
         if not finalized:
             self._get_repo().delete_pending_action(int(pending["id"]))
-            return self._make_message("No encontré movimientos válidos para confirmar.", _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP]))
+            return self._make_message("⚠️ No encontré movimientos válidos para confirmar.", _kb_main())
         self._get_repo().append_transactions(finalized)
         self._get_repo().delete_pending_action(int(pending["id"]))
         return self._make_message(
             format_multi_tx_saved_message(finalized),
-            _kb([ACTION_UNDO, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
+            _kb_after_save(),
         )
 
     def _create_recurring_from_tx(self, user_id: str, tx: Dict[str, Any]) -> Dict[str, Any]:
@@ -657,7 +668,7 @@ class BotPipeline(PipelineBase):
         answer = (text or "").strip()
         if is_negative(answer):
             self._get_repo().delete_pending_action(int(pending["id"]))
-            return self._make_message("Entendido. No crearé recordatorio para ese gasto.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+            return self._make_message("✅ Entendido. No crearé recordatorio para ese gasto.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para crear el recordatorio o <code>no</code> para omitir.",
@@ -735,10 +746,7 @@ class BotPipeline(PipelineBase):
             "recurrence": recurrence,
         }
         self._get_repo().upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
-        intro = (
-            f"Perfecto. Crearé el recordatorio para <b>{service_name}</b> "
-            f"({recurrence})."
-        )
+        intro = f"✅ Perfecto. Voy a configurar el recordatorio para <b>{service_name}</b> ({recurrence})."
         return self._make_message(
             f"{intro}\n\n{build_setup_question(step, recurrence)}",
             _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
@@ -826,11 +834,11 @@ class BotPipeline(PipelineBase):
             offsets_text = content
         else:
             if len(parts) < 2:
-                return self._make_message("Uso: <code>recordatorios ID 3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+                return self._make_message("ℹ️ Uso: <code>recordatorios ID 3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
             try:
                 recurring_id = int(parts[1])
             except ValueError:
-                return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+                return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
             offsets_text = " ".join(parts[2:]).strip()
 
         offsets = parse_remind_offsets(offsets_text)
@@ -841,11 +849,11 @@ class BotPipeline(PipelineBase):
                     "recurring_edit_reminders",
                     {"recurring_id": recurring_id},
                 )
-            return self._make_message("Envía los recordatorios. Ej: <code>3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("ℹ️ Envía los recordatorios. Ej: <code>3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
 
         recurring = self._get_repo().get_recurring_expense(int(recurring_id))
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         self._get_repo().update_recurring_expense(int(recurring_id), {"remind_offsets": offsets})
         if pending:
             self._get_repo().delete_pending_action(int(pending["id"]))
@@ -855,15 +863,15 @@ class BotPipeline(PipelineBase):
         content = (text or "").strip().lower()
         parts = content.split()
         if len(parts) < 2:
-            return self._make_message("Uso: <code>pausar ID</code> o <code>activar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("ℹ️ Uso: <code>pausar ID</code> o <code>activar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         action = parts[0]
         try:
             recurring_id = int(parts[1])
         except ValueError:
-            return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
 
         if action == "pausar":
             self._get_repo().update_recurring_expense(recurring_id, {"status": "paused"})
@@ -882,57 +890,57 @@ class BotPipeline(PipelineBase):
             self._get_repo().update_recurring_expense(recurring_id, {"status": "active", "next_due": next_due})
             return self._make_message("▶️ Recurrente activado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
-        return self._make_message("Acción inválida.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+        return self._make_message(RECURRING_INVALID_ACTION_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
 
     def _handle_recurring_update_amount(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
         if len(parts) < 3:
-            return self._make_message("Uso: <code>monto ID 45000</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("ℹ️ Uso: <code>monto ID 45000</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         try:
             recurring_id = int(parts[1])
         except ValueError:
-            return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         amount = parse_amount(" ".join(parts[2:]))
         if amount is None or amount < 0:
-            return self._make_message("Monto inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("⚠️ <b>Monto inválido</b>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         self._get_repo().update_recurring_expense(recurring_id, {"amount": amount})
-        return self._make_message("✅ Valor actualizado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+        return self._make_message("✅ Monto actualizado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_cancel(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
         if len(parts) < 2:
-            return self._make_message("Uso: <code>cancelar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("ℹ️ Uso: <code>cancelar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         try:
             recurring_id = int(parts[1])
         except ValueError:
-            return self._make_message("ID inválido.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
-            return self._make_message("No encontrado.", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         self._get_repo().update_recurring_expense(recurring_id, {"status": "canceled", "canceled_at": now})
-        return self._make_message("🛑 Suscripción cancelada.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+        return self._make_message("🛑 Recurrente cancelado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_action(self, user: Dict[str, Any], data: str) -> BotMessage:
         parts = (data or "").split(":")
         if len(parts) != 3:
-            return self._make_message("Acción inválida.")
+            return self._make_message(RECURRING_INVALID_ACTION_MESSAGE)
         action = parts[1]
         try:
             bill_instance_id = int(parts[2])
         except ValueError:
-            return self._make_message("Acción inválida.")
+            return self._make_message(RECURRING_INVALID_ACTION_MESSAGE)
         bill = self._get_repo().get_bill_instance(bill_instance_id)
         if not bill or str(bill.get("user_id")) != str(user.get("userId")):
-            return self._make_message("Acción no autorizada.")
+            return self._make_message("🔒 <b>Acción no autorizada</b>")
 
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         if action == "paid":
             if str(bill.get("status")) == "paid":
-                return self._make_message("Este pago ya estaba confirmado.")
+                return self._make_message("ℹ️ Este pago ya estaba confirmado.")
             tx_id = generate_tx_id()
             due_date = bill.get("due_date")
             date_value = due_date.isoformat() if hasattr(due_date, "isoformat") else str(due_date)
@@ -1002,7 +1010,7 @@ class BotPipeline(PipelineBase):
         if action == "no":
             return self._make_message("❌ Entendido. Lo dejaré pendiente.")
 
-        return self._make_message("Acción inválida.")
+        return self._make_message(RECURRING_INVALID_ACTION_MESSAGE)
 
     async def _transcribe_audio(self, audio_bytes: bytes) -> Optional[str]:
         try:

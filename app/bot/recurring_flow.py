@@ -226,10 +226,10 @@ def compute_next_due(
 def build_setup_question(step: str, recurrence: str) -> str:
     if step == "ask_billing_day":
         if recurrence in {"weekly", "biweekly"}:
-            return "¿Qué día de la semana se cobra? (ej: lunes)"
-        return "¿Qué día del mes se cobra? (1-31)"
+            return "¿Qué día de la semana se cobra? Ej: <code>lunes</code>."
+        return "¿Qué día del mes se cobra? Escribe un número de <code>1</code> a <code>31</code>."
     if step == "ask_reminders":
-        return "¿Cuándo quieres recordatorios? Ej: <code>3,1,0</code> (3 días antes, 1 día antes y el día)."
+        return "¿Cuándo quieres los recordatorios? Ej: <code>3,1,0</code> (3 días antes, 1 día antes y el día del cobro)."
     if step == "ask_payment_link":
         return "¿Tienes enlace de pago? Envíalo o escribe <code>no</code>."
     if step == "ask_payment_reference":
@@ -278,7 +278,7 @@ def build_setup_summary(recurring: Dict[str, Any], settings: Settings) -> str:
     offsets = sorted(set(offsets), reverse=True)
     offsets_label = ", ".join([f"-{v}" if v else "0" for v in offsets]) if offsets else "0"
     return (
-        "✅ <b>Suscripción guardada</b>\n"
+        "✅ <b>Recurrente configurado</b>\n"
         f"<b>Servicio:</b> {escape_html(str(service_name))}\n"
         f"<b>Monto:</b> {amount}\n"
         f"<b>Frecuencia:</b> {escape_html(recurrence)}\n"
@@ -303,17 +303,17 @@ def handle_setup_step(step: str, text: str, recurrence: str) -> SetupResult:
         if recurrence in {"weekly", "biweekly"}:
             weekday = parse_weekday(text)
             if weekday is None:
-                return SetupResult("No entendí el día. Prueba con: lunes, martes, miércoles.")
+                return SetupResult("⚠️ No entendí el día. Prueba con: <code>lunes</code>, <code>martes</code> o <code>miércoles</code>.")
             return SetupResult("", updates={"billing_weekday": weekday}, next_step="ask_reminders")
         day = parse_billing_day(text)
         if day is None:
-            return SetupResult("No entendí el día. Escribe un número entre 1 y 31.")
+            return SetupResult("⚠️ No entendí el día. Escribe un número entre <code>1</code> y <code>31</code>.")
         return SetupResult("", updates={"billing_day": day}, next_step="ask_reminders")
 
     if step == "ask_reminders":
         offsets = parse_remind_offsets(text)
         if not offsets:
-            return SetupResult("No entendí los recordatorios. Ej: 3,1,0")
+            return SetupResult("⚠️ No entendí los recordatorios. Usa este formato: <code>3,1,0</code>.")
         return SetupResult("", updates={"remind_offsets": offsets}, next_step="ask_payment_link")
 
     if step == "ask_payment_link":
@@ -327,7 +327,7 @@ def handle_setup_step(step: str, text: str, recurrence: str) -> SetupResult:
             return SetupResult("", updates={"payment_reference": ""}, next_step=None, done=True)
         return SetupResult("", updates={"payment_reference": text.strip()[:500]}, next_step=None, done=True)
 
-    return SetupResult("No entendí. Intenta de nuevo.")
+    return SetupResult("⚠️ No entendí el mensaje. Intenta de nuevo.")
 
 
 def get_today(settings: Settings) -> date:

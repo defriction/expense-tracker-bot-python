@@ -9,8 +9,8 @@ from .parser import escape_html, format_currency
 
 
 HELP_MESSAGE = (
-    "<b>Asistente financiero</b>\n\n"
-    "<b>Ejemplos</b>\n"
+    "ℹ️ <b>Asistente financiero</b>\n\n"
+    "<b>Registrar movimientos</b>\n"
     "• <code>comí un pan 5k</code>\n"
     "• <code>uber 12000</code>\n"
     "• <code>salario 2500000</code> (ingreso)\n\n"
@@ -26,7 +26,7 @@ HELP_MESSAGE = (
     "<b>Múltiples movimientos</b>\n"
     "• <code>me gasté 5k en comida y 60k en ropa</code>\n"
     "• Si hay ambigüedad, te pediré confirmar con <code>sí</code> o <code>no</code>\n\n"
-    "<b>Comandos</b>\n"
+    "<b>Menú rápido</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
     "• <code>/recurrentes</code> ver recurrentes\n"
@@ -157,7 +157,7 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
     last10 = filtered[:10]
 
     if not last10:
-        return "📭 <b>Sin movimientos</b>\nAún no tienes transacciones registradas."
+        return "📭 <b>Sin movimientos</b>\nAún no tienes movimientos registrados."
 
     message = [
         "🧾 <b>Movimientos recientes</b>",
@@ -201,7 +201,7 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
 
 def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
     if not items:
-        return "📭 <b>Sin recurrentes</b>\nNo tienes gastos recurrentes."
+        return "📭 <b>Sin recurrentes</b>\nNo tienes recordatorios recurrentes."
 
     message = [
         "🔁 <b>Recurrentes</b>",
@@ -219,13 +219,13 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
         next_due = escape_html(str(item.get("next_due") or "—"))
         message.append(f"<b>ID:</b> <code>{rid}</code> · <b>{amount}</b>")
         message.append(f"{merchant} · {recurrence} · <b>{status}</b>")
-        message.append(f"Vence: <code>{next_due}</code>")
+        message.append(f"<b>Próximo cobro:</b> <code>{next_due}</code>")
         message.append("")
 
-    message.append("Para editar recordatorios: <code>recordatorios ID 3,1,0</code>")
-    message.append("Para actualizar valor: <code>monto ID 45000</code>")
-    message.append("Para cancelar: <code>cancelar ID</code>")
-    message.append("Para pausar/activar: <code>pausar ID</code> / <code>activar ID</code>")
+    message.append("Editar recordatorios: <code>recordatorios ID 3,1,0</code>")
+    message.append("Actualizar monto: <code>monto ID 45000</code>")
+    message.append("Cancelar: <code>cancelar ID</code>")
+    message.append("Pausar/activar: <code>pausar ID</code> / <code>activar ID</code>")
     return "\n".join(message).strip()
 
 
