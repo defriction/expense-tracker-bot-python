@@ -19,7 +19,7 @@ También puede:
 - Activa usuarios con token: `/start TU-TOKEN`.
 - Muestra lista de movimientos: `/list`.
 - Muestra resumen del mes: `/summary`.
-- Muestra recurrentes: `/recurrentes`.
+- Muestra recurrentes: `/recurrings` (también acepta `/recurrentes`).
 - Descarga Excel: `/download` o `/descargar`.
 - Deshace el último movimiento: `/undo`.
 - Elimina todas las transacciones (con confirmación): `/clear`.

@@ -63,7 +63,7 @@ ACTION_SUMMARY = BotAction("/summary", "📊 Resumen")
 ACTION_UNDO = BotAction("/undo", "↩️ Deshacer")
 ACTION_HELP = BotAction("/help", "ℹ️ Ayuda")
 ACTION_DOWNLOAD = BotAction("/download", "⬇️ Descargar")
-ACTION_RECURRINGS = BotAction("/recurrentes", "🔁 Recurrentes")
+ACTION_RECURRINGS = BotAction("/recurrings", "🔁 Recurrentes")
 
 
 def _kb(*rows: list[BotAction]) -> BotKeyboard:

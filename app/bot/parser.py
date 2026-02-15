@@ -173,7 +173,7 @@ def parse_command(
         route = "list"
     elif first_token == "/summary":
         route = "summary"
-    elif first_token == "/recurrentes":
+    elif first_token in {"/recurrings", "/recurrentes"}:
         route = "recurrings"
     elif first_token in {"/download", "/descargar"}:
         route = "download"

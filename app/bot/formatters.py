@@ -29,7 +29,7 @@ HELP_MESSAGE = (
     "<b>Menú rápido</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
-    "• <code>/recurrentes</code> ver recurrentes\n"
+    "• <code>/recurrings</code> ver recurrentes\n"
     "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
     "• <code>/clear</code> eliminar todas (con confirmación)\n"
