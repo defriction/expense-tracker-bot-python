@@ -20,6 +20,8 @@ class DataRepo(Protocol):
 
     def find_invite(self, invite_token: str) -> Optional[Dict[str, Any]]: ...
 
+    def create_invite(self, invite_token: str, actor_user_id: Optional[str] = None) -> Dict[str, Any]: ...
+
     def mark_invite_used(self, invite_token: str, used_by_user_id: Optional[str]) -> None: ...
 
     def append_transaction(self, tx: Dict[str, Any]) -> None: ...
@@ -98,6 +100,9 @@ class CompositeRepo:
 
     def find_invite(self, invite_token: str) -> Optional[Dict[str, Any]]:
         return self.primary.find_invite(invite_token)
+
+    def create_invite(self, invite_token: str, actor_user_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.primary.create_invite(invite_token, actor_user_id)
 
     def mark_invite_used(self, invite_token: str, used_by_user_id: Optional[str]) -> None:
         self.primary.mark_invite_used(invite_token, used_by_user_id)

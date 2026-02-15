@@ -6,6 +6,7 @@ from app.bot.handlers import error_handler, get_handlers, PipelineFactory
 from app.routers.telegram import build_telegram_router
 from app.services.telegram import build_telegram_app
 from app.routers.evolution import build_evolution_router
+from app.routers.admin import build_admin_router
 from app.services.evolution import EvolutionClient
 from app.services.recurring_scheduler import process_recurring_reminders
 
@@ -19,6 +20,7 @@ evolution_client = EvolutionClient(settings)
 
 app.include_router(build_telegram_router(telegram_app, settings))
 app.include_router(build_evolution_router(pipeline, evolution_client, settings))
+app.include_router(build_admin_router(pipeline._get_repo(), settings))
 
 
 @app.on_event("startup")

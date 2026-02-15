@@ -47,7 +47,6 @@ Opcional:
 
 - Groq API key (para IA y voz)
 - Redis (rate limit compartido)
-- Google Sheets (copia secundaria de datos)
 
 ## Variables de entorno
 
@@ -65,9 +64,8 @@ Recomendadas:
 
 Opcionales:
 
-- `GOOGLE_SHEETS_ID`
-- `GOOGLE_SERVICE_ACCOUNT_JSON` o `GOOGLE_SERVICE_ACCOUNT_FILE`
 - `ADMIN_TELEGRAM_CHAT_ID`
+- `INVITE_ADMIN_API_KEY` (protege `POST /admin/invites`)
 - `REDIS_URL`
 - `EVOLUTION_API_URL`
 - `EVOLUTION_API_KEY`
@@ -78,6 +76,31 @@ Opcionales:
 - `RATE_LIMIT_USER_PER_MIN` (default `60`)
 - `RATE_LIMIT_IP_PER_MIN` (default `120`)
 - `RATE_LIMIT_ONBOARDING_PER_MIN` (default `10`)
+
+## Crear invite
+
+Endpoint interno para emitir tokens de onboarding:
+
+- `POST /admin/invites`
+- Header requerido: `X-Admin-Api-Key: <INVITE_ADMIN_API_KEY>`
+- Body opcional:
+
+```json
+{
+  "actor_user_id": "USR-ADMIN-123"
+}
+```
+
+Respuesta:
+
+```json
+{
+  "ok": true,
+  "inviteToken": "INV-...",
+  "status": "unused",
+  "startCommand": "/start INV-..."
+}
+```
 
 ## Cómo correrlo
 

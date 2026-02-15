@@ -1,8 +1,6 @@
 fastapi
 uvicorn
 python-telegram-bot==20.7
-gspread
-google-auth
 httpx
 openpyxl
 sqlalchemy>=2.0

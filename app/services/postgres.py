@@ -109,6 +109,35 @@ class PostgresRepo:
                 "usedByUserId": row["used_by_user_id"],
             }
 
+    def create_invite(self, invite_token: str, actor_user_id: Optional[str] = None) -> Dict[str, Any]:
+        now = self._now_iso()
+        with self._session() as session:
+            row = session.execute(
+                text(
+                    """
+                    insert into invites (invite_token, status, created_at)
+                    values (:token, 'unused', :now)
+                    returning invite_token, status, used_by_user_id
+                    """
+                ),
+                {"token": invite_token, "now": now},
+            ).mappings().first()
+            session.execute(
+                text(
+                    """
+                    insert into audit_events (entity_type, entity_id, action, payload, created_at, actor_user_id, source)
+                    values ('invite', :token, 'create', cast(:payload as jsonb), :now, :actor_user_id, 'admin_api')
+                    """
+                ),
+                {"token": invite_token, "payload": "{}", "now": now, "actor_user_id": actor_user_id},
+            )
+            session.commit()
+            return {
+                "inviteToken": row["invite_token"],
+                "status": row["status"],
+                "usedByUserId": row["used_by_user_id"],
+            }
+
     def mark_invite_used(self, invite_token: str, used_by_user_id: Optional[str]) -> None:
         now = self._now_iso()
         with self._session() as session:
@@ -616,6 +645,9 @@ class ResilientPostgresRepo:
 
     def find_invite(self, invite_token: str) -> Optional[Dict[str, Any]]:
         return self.repo.find_invite(invite_token)
+
+    def create_invite(self, invite_token: str, actor_user_id: Optional[str] = None) -> Dict[str, Any]:
+        return self.repo.create_invite(invite_token, actor_user_id)
 
     def mark_invite_used(self, invite_token: str, used_by_user_id: Optional[str]) -> None:
         return self.repo.mark_invite_used(invite_token, used_by_user_id)
