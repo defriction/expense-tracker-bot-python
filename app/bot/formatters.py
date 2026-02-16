@@ -249,12 +249,11 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
         message.append(f"<b>Hora recordatorio:</b> <code>{escape_html(reminder_hour_label)}</code>")
         message.append("")
 
-    message.append("Cómo actualizar uno:")
-    message.append("1) Copia el <b>ID</b> de arriba.")
-    message.append("2) Recordatorios: <code>recordatorios ID 3,1,0</code>")
-    message.append("3) Monto: <code>monto ID 45000</code>")
-    message.append("4) Estado: <code>pausar ID</code> / <code>activar ID</code> / <code>cancelar ID</code>")
-    message.append("5) Limpiar todos: <code>/clear_recurrings</code>")
+    message.append("Opciones para actualizar:")
+    message.append("• Lenguaje natural con ID: <code>ID 2 cambiar a 56000 y recordar a las 18:30</code>")
+    message.append("• Comandos directos: <code>monto ID 45000</code> / <code>recordatorios ID 3,1,0</code>")
+    message.append("• Estado: <code>pausar ID</code> / <code>activar ID</code> / <code>cancelar ID</code>")
+    message.append("• Limpiar todos: <code>/clear_recurrings</code>")
     return "\n".join(message).strip()
 
 

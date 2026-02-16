@@ -44,6 +44,7 @@ from app.bot.recurring_flow import (
     is_negative,
     parse_amount,
     parse_recurrence,
+    parse_reminder_hour,
     parse_remind_offsets,
     parse_service_name,
 )
@@ -200,6 +201,7 @@ class CommandFlow:
     async def handle_recurrings(self, user: Dict[str, Any], chat_id: Optional[int]) -> BotMessage:
         logger.info("Recurrings command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         items = self.pipeline._get_repo().list_recurring_expenses(user.get("userId"))
+        items = [item for item in items if str(item.get("status") or "").lower() == "active"]
         keyboard = _kb_main()
         return self.pipeline._make_message(format_recurring_list_message(items), keyboard)
 
@@ -542,6 +544,9 @@ class BotPipeline(PipelineBase):
         if command.route == "recurring_toggle":
             return [self._handle_recurring_toggle(auth_result.user, command.text)]
         if command.route == "ai":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
             natural = self._try_handle_recurring_natural(auth_result.user, command.text or "")
             if natural is not None:
                 return [natural]
@@ -622,6 +627,9 @@ class BotPipeline(PipelineBase):
                     )
                     if pending_response is not None:
                         return [pending_response]
+                    natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+                    if natural_ai is not None:
+                        return [natural_ai]
                     natural = self._try_handle_recurring_natural(auth_result.user, command.text or "")
                     if natural is not None:
                         return [natural]
@@ -889,6 +897,173 @@ class BotPipeline(PipelineBase):
             return None
 
     @staticmethod
+    def _looks_like_recurring_request(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        patterns = [
+            r"\b(recordatorio|recordatorios|recurrente|recurrentes|suscripcion|suscripciones)\b",
+            r"\b(cada\s+mes|todos?\s+los\s+meses|mensual|semanal|quincenal|trimestral|anual)\b",
+            r"\bid\s*#?\s*\d+\b.*\b(cambiar|actualizar|monto|valor|hora|pausar|activar|cancelar)\b",
+            r"\b(a\s+las\s+\d{1,2}(:\d{2})?\s*(am|pm)?)\b",
+        ]
+        return any(re.search(pattern, t) for pattern in patterns)
+
+    def _parse_billing_day_natural(self, text: str) -> Optional[int]:
+        t = (text or "").lower()
+        candidates = [
+            re.search(r"\b(\d{1,2})\s+de\s+cada\s+mes\b", t),
+            re.search(r"\bel\s+(\d{1,2})\s+de\s+cada\s+mes\b", t),
+            re.search(r"\btodos?\s+los\s+(\d{1,2})\b", t),
+            re.search(r"\bel\s+(\d{1,2})\b", t),
+        ]
+        for match in candidates:
+            if not match:
+                continue
+            try:
+                day = int(match.group(1))
+            except ValueError:
+                continue
+            if 1 <= day <= 31:
+                return day
+        return None
+
+    async def _try_handle_recurring_natural_ai(self, user: Dict[str, Any], text: str) -> Optional[BotMessage]:
+        raw = (text or "").strip()
+        if not raw or not self.settings.groq_api_key:
+            return None
+        if not self._looks_like_recurring_request(raw):
+            return None
+        try:
+            content = await self._get_groq().chat_completion(
+                (
+                    "Eres un parser de intenciones para recordatorios recurrentes de pago.\n"
+                    "Devuelve JSON puro, sin markdown.\n"
+                    "Schema:\n"
+                    "{\n"
+                    '  "intent": "none|create|update|pause|activate|cancel|list",\n'
+                    '  "target_id": number|null,\n'
+                    '  "service_name": string|null,\n'
+                    '  "amount": number|null,\n'
+                    '  "recurrence": "weekly|biweekly|monthly|quarterly|yearly"|null,\n'
+                    '  "billing_day": number|null,\n'
+                    '  "reminder_hour": number|null,\n'
+                    '  "remind_offsets": number[]|null,\n'
+                    '  "confidence": number\n'
+                    "}\n"
+                    "Si no es de recurrentes, intent=none."
+                ),
+                raw,
+            )
+            parsed = extract_json(content)
+        except Exception as exc:
+            logger.warning("Recurring natural AI parse failed user_id=%s error=%s", user.get("userId"), exc)
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        intent = str(parsed.get("intent") or "none").lower()
+        if intent in {"none", ""}:
+            return None
+        if intent == "list":
+            return await self.command_flow.handle_recurrings(user, None)
+
+        target_id = parsed.get("target_id")
+        service_name = str(parsed.get("service_name") or "").strip()
+        recurring_id: Optional[int] = None
+        if isinstance(target_id, (int, float)) and int(target_id) > 0:
+            recurring_id = int(target_id)
+        elif service_name:
+            matches = self._find_recurring_by_text(str(user.get("userId")), service_name)
+            if len(matches) == 1:
+                recurring_id = int(matches[0]["id"])
+
+        if intent in {"pause", "activate", "cancel"}:
+            if recurring_id is None:
+                recurring_id, err = self._resolve_recurring_target(user, raw, allow_numeric_fallback=True)
+                if err:
+                    return err
+            if intent == "pause":
+                return self._handle_recurring_toggle(user, f"pausar {recurring_id}")
+            if intent == "activate":
+                return self._handle_recurring_toggle(user, f"activar {recurring_id}")
+            return self._handle_recurring_cancel(user, f"cancelar {recurring_id}")
+
+        if intent == "create":
+            return self._start_recurring_from_text(user, raw)
+
+        if intent != "update":
+            return None
+
+        if recurring_id is None:
+            recurring_id, err = self._resolve_recurring_target(user, raw)
+            if err:
+                return err
+        recurring = self._get_repo().get_recurring_expense(int(recurring_id))
+        if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
+            return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+
+        updates: Dict[str, Any] = {}
+        amount = parsed.get("amount")
+        if isinstance(amount, (int, float)) and float(amount) >= 0:
+            updates["amount"] = round(float(amount), 2)
+        recurrence = str(parsed.get("recurrence") or "").lower()
+        if recurrence in {"weekly", "biweekly", "monthly", "quarterly", "yearly"}:
+            updates["recurrence"] = recurrence
+        billing_day = parsed.get("billing_day")
+        if isinstance(billing_day, (int, float)) and 1 <= int(billing_day) <= 31:
+            updates["billing_day"] = int(billing_day)
+        elif updates.get("recurrence") in {"monthly", "quarterly", "yearly"}:
+            inferred_day = self._parse_billing_day_natural(raw)
+            if inferred_day is not None:
+                updates["billing_day"] = inferred_day
+
+        reminder_hour = parsed.get("reminder_hour")
+        if isinstance(reminder_hour, (int, float)) and 0 <= int(reminder_hour) <= 23:
+            updates["reminder_hour"] = int(reminder_hour)
+        elif re.search(r"\ba las\b|\bhora\b", self._norm_match(raw)):
+            inferred_hour = parse_reminder_hour(raw)
+            if inferred_hour is not None:
+                updates["reminder_hour"] = inferred_hour
+
+        offsets = parsed.get("remind_offsets")
+        if isinstance(offsets, list):
+            clean_offsets = []
+            for val in offsets:
+                try:
+                    iv = abs(int(val))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= iv <= 30 and iv not in clean_offsets:
+                    clean_offsets.append(iv)
+            clean_offsets.sort(reverse=True)
+            if clean_offsets:
+                updates["remind_offsets"] = clean_offsets
+
+        if not updates:
+            return self._make_message(
+                "⚠️ Me faltan datos para actualizar ese recurrente. Ejemplo: <code>ID 2 cambiar monto a 56000 y hora 18:30</code>",
+                _kb([ACTION_RECURRINGS, ACTION_HELP]),
+            )
+
+        self._get_repo().update_recurring_expense(int(recurring_id), updates)
+        refreshed = self._get_repo().get_recurring_expense(int(recurring_id))
+        if refreshed and str(refreshed.get("status") or "").lower() == "active":
+            today = get_today(self.settings)
+            next_due = compute_next_due(
+                str(refreshed.get("recurrence") or "monthly"),
+                today,
+                refreshed.get("billing_day"),
+                refreshed.get("billing_weekday"),
+                refreshed.get("billing_month"),
+                self._parse_iso_date(str(refreshed.get("anchor_date") or "")),
+            )
+            self._get_repo().update_recurring_expense(int(recurring_id), {"next_due": next_due})
+            refreshed = self._get_repo().get_recurring_expense(int(recurring_id))
+        if refreshed:
+            return self._make_message(build_setup_summary(refreshed, self.settings), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+        return self._make_message("✅ Recurrente actualizado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+
+    @staticmethod
     def _format_amount_for_command(amount: float) -> str:
         if float(amount).is_integer():
             return str(int(amount))
@@ -954,7 +1129,10 @@ class BotPipeline(PipelineBase):
         ):
             return self._start_recurring_from_text(user, raw)
 
-        if re.search(r"\b(recordatorios?|avisos?)\b", norm):
+        if re.search(r"\b(nuevo|crear|crea|agregar|agrega)\b.*\b(recordatorio|recurrente|suscripcion)\b", norm):
+            return self._start_recurring_from_text(user, raw)
+
+        if re.search(r"\b(recordatorios?|avisos?)\b", norm) and re.search(r"\d+\s*,\s*\d+", raw):
             offsets = parse_remind_offsets(raw)
             if offsets:
                 if not (has_explicit_id or has_target_match or has_recurring_hint):
@@ -1075,6 +1253,12 @@ class BotPipeline(PipelineBase):
         billing_day = None
         if recurrence in {"monthly", "quarterly", "yearly"}:
             billing_day = self._parse_billing_day_from_text(content)
+        reminder_hour = parse_reminder_hour(content)
+        offsets = [3, 1, 0]
+        if re.search(r"\d+\s*,\s*\d+", content):
+            parsed_offsets = parse_remind_offsets(content)
+            if parsed_offsets:
+                offsets = parsed_offsets
         recurrence_id = f"REC:{service_name.upper().replace(' ', '_')[:40]}"
         amount = parse_amount(content) or 0
         today = get_today(self.settings)
@@ -1088,6 +1272,8 @@ class BotPipeline(PipelineBase):
                     "recurrence": recurrence,
                     "billing_day": billing_day,
                     "amount": amount,
+                    "reminder_hour": reminder_hour if reminder_hour is not None else (existing.get("reminder_hour") or 9),
+                    "remind_offsets": offsets,
                     "status": "pending",
                 },
             )
@@ -1107,12 +1293,30 @@ class BotPipeline(PipelineBase):
                     "billing_month": today.month,
                     "anchor_date": today.isoformat(),
                     "timezone": self.settings.timezone or "America/Bogota",
-                    "remind_offsets": [3, 1, 0],
-                    "reminder_hour": 9,
+                    "remind_offsets": offsets,
+                    "reminder_hour": reminder_hour if reminder_hour is not None else 9,
                     "status": "pending",
                     "source_tx_id": None,
                 }
             )
+
+        if billing_day is not None and reminder_hour is not None:
+            next_due = compute_next_due(
+                recurrence,
+                today,
+                billing_day,
+                None,
+                recurring.get("billing_month"),
+                self._parse_iso_date(str(recurring.get("anchor_date") or "")),
+            )
+            self._get_repo().update_recurring_expense(
+                int(recurring["id"]),
+                {"status": "active", "next_due": next_due},
+            )
+            refreshed = self._get_repo().get_recurring_expense(int(recurring["id"]))
+            if refreshed:
+                return self._make_message(build_setup_summary(refreshed, self.settings), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+            return self._make_message("✅ Recurrente activado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
         step = "ask_reminders" if billing_day else "ask_billing_day"
         pending_state = {
             "recurring_id": recurring["id"],
@@ -1136,15 +1340,21 @@ class BotPipeline(PipelineBase):
     def _parse_billing_day_from_text(self, text: str) -> Optional[int]:
         import re
 
-        match = re.search(r"(?:todos?\s+los|cada)\s+(\d{1,2})\b", (text or "").lower())
-        if not match:
-            return None
-        try:
-            value = int(match.group(1))
+        lower = (text or "").lower()
+        matches = [
+            re.search(r"(?:todos?\s+los|cada)\s+(\d{1,2})\b", lower),
+            re.search(r"\b(\d{1,2})\s+de\s+cada\s+mes\b", lower),
+            re.search(r"\bel\s+(\d{1,2})\s+de\s+cada\s+mes\b", lower),
+        ]
+        for match in matches:
+            if not match:
+                continue
+            try:
+                value = int(match.group(1))
+            except ValueError:
+                continue
             if 1 <= value <= 31:
                 return value
-        except ValueError:
-            return None
         return None
 
     def _handle_recurring_setup(self, user: Dict[str, Any], text: str) -> BotMessage:

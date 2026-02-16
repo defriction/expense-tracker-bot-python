@@ -135,7 +135,15 @@ def parse_service_name(text: str) -> Optional[str]:
     t = (text or "").strip()
     match = re.search(r"pagar\s+(.+)", t, flags=re.IGNORECASE)
     if not match:
-        return None
+        alt = re.search(
+            r"(?:nuevo|crear|crea|agregar|agrega)?\s*(?:recordatorio|recurrente|suscripci[oó]n)\s+(.+)",
+            t,
+            flags=re.IGNORECASE,
+        )
+        if alt:
+            match = alt
+        else:
+            return None
     service = match.group(1)
     service = re.sub(r"\b(todos?\s+los\s+\d{1,2}|cada\s+mes|mensual|semanal|quincenal|trimestral|anual)\b", "", service, flags=re.IGNORECASE)
     service = re.sub(r"\s+", " ", service).strip(" .,")
