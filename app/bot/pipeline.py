@@ -937,9 +937,12 @@ class BotPipeline(PipelineBase):
         try:
             content = await self._get_groq().chat_completion(
                 (
-                    "Eres un parser de intenciones para recordatorios recurrentes de pago.\n"
-                    "Devuelve JSON puro, sin markdown.\n"
-                    "Schema:\n"
+                    "Eres un parser experto de recordatorios recurrentes de pago en español.\n"
+                    "Objetivo: extraer intención + campos estructurados desde texto natural.\n"
+                    "Responde SOLO JSON válido (sin markdown, sin comentarios).\n"
+                    "No inventes datos: si no aparece en el texto, usa null o [] según corresponda.\n"
+                    "Si no es un caso de recurrentes, usa intent=none.\n\n"
+                    "Schema exacto:\n"
                     "{\n"
                     '  "intent": "none|create|update|pause|activate|cancel|list",\n'
                     '  "target_id": number|null,\n'
@@ -948,10 +951,25 @@ class BotPipeline(PipelineBase):
                     '  "recurrence": "weekly|biweekly|monthly|quarterly|yearly"|null,\n'
                     '  "billing_day": number|null,\n'
                     '  "reminder_hour": number|null,\n'
-                    '  "remind_offsets": number[]|null,\n'
+                    '  "remind_offsets": number[],\n'
+                    '  "includes_same_day": boolean,\n'
                     '  "confidence": number\n'
-                    "}\n"
-                    "Si no es de recurrentes, intent=none."
+                    "}\n\n"
+                    "Reglas de extracción:\n"
+                    "- reminder_hour: entero 0..23. Ej: '6 pm'->18, '2:30 pm'->14.\n"
+                    "- billing_day: día del mes 1..31 cuando aparezca ('16 de cada mes', 'el 5').\n"
+                    "- remind_offsets: días antes del cobro en orden descendente, sin repetidos.\n"
+                    "- includes_same_day=true cuando aparezca 'mismo día', 'el día', 'día del cobro', 'hoy', '0 días'.\n"
+                    "- Si includes_same_day=true, asegúrate de incluir 0 en remind_offsets.\n"
+                    "- amount: número absoluto (ej: 56k->56000).\n"
+                    "- target_id: solo si el texto menciona ID explícito.\n\n"
+                    "Ejemplos:\n"
+                    "Input: 'ID 2 actualizar a las 3 pm, recordatorio 3 dias y el mismo dia'\n"
+                    'Output: {"intent":"update","target_id":2,"service_name":null,"amount":null,"recurrence":null,"billing_day":null,"reminder_hour":15,"remind_offsets":[3,0],"includes_same_day":true,"confidence":0.93}\n'
+                    "Input: 'pago recurrente de 56k para luz a las 6 pm'\n"
+                    'Output: {"intent":"create","target_id":null,"service_name":"luz","amount":56000,"recurrence":"monthly","billing_day":null,"reminder_hour":18,"remind_offsets":[],"includes_same_day":false,"confidence":0.89}\n'
+                    "Input: 'almuerzo 20000'\n"
+                    'Output: {"intent":"none","target_id":null,"service_name":null,"amount":null,"recurrence":null,"billing_day":null,"reminder_hour":null,"remind_offsets":[],"includes_same_day":false,"confidence":0.98}'
                 ),
                 raw,
             )
@@ -964,6 +982,12 @@ class BotPipeline(PipelineBase):
         intent = str(parsed.get("intent") or "none").lower()
         if intent in {"none", ""}:
             return None
+        confidence = float(parsed.get("confidence") or 0)
+        if confidence < 0.55:
+            return self._make_message(
+                "⚠️ No tuve suficiente claridad para aplicar cambios automáticos. Indícame el ID y el cambio puntual, por ejemplo: <code>ID 2 cambiar hora a 18:30</code>.",
+                _kb([ACTION_RECURRINGS, ACTION_HELP]),
+            )
         if intent == "list":
             return await self.command_flow.handle_recurrings(user, None)
 
@@ -1026,6 +1050,8 @@ class BotPipeline(PipelineBase):
                 updates["reminder_hour"] = inferred_hour
 
         offsets = parsed.get("remind_offsets")
+        includes_same_day = bool(parsed.get("includes_same_day"))
+        inferred_offsets = parse_remind_offsets(raw)
         if isinstance(offsets, list):
             clean_offsets = []
             for val in offsets:
@@ -1035,9 +1061,20 @@ class BotPipeline(PipelineBase):
                     continue
                 if 0 <= iv <= 30 and iv not in clean_offsets:
                     clean_offsets.append(iv)
+            for iv in inferred_offsets:
+                if 0 <= iv <= 30 and iv not in clean_offsets:
+                    clean_offsets.append(iv)
+            if includes_same_day and 0 not in clean_offsets:
+                clean_offsets.append(0)
             clean_offsets.sort(reverse=True)
             if clean_offsets:
                 updates["remind_offsets"] = clean_offsets
+        elif inferred_offsets:
+            clean_offsets = list(inferred_offsets)
+            if includes_same_day and 0 not in clean_offsets:
+                clean_offsets.append(0)
+                clean_offsets.sort(reverse=True)
+            updates["remind_offsets"] = clean_offsets
 
         if not updates:
             return self._make_message(

@@ -58,13 +58,26 @@ def parse_billing_day(text: str) -> Optional[int]:
 
 def parse_remind_offsets(text: str) -> list[int]:
     values = []
-    for raw in re.findall(r"-?\d{1,2}", text or ""):
+    source = text or ""
+    for raw in re.findall(r"-?\d{1,2}", source):
         try:
             value = abs(int(raw))
         except ValueError:
             continue
         if value not in values:
             values.append(value)
+    norm = _normalize_text(source)
+    same_day_patterns = [
+        r"\bmismo\s+d[ií]a\b",
+        r"\bel\s+mismo\s+d[ií]a\b",
+        r"\bd[ií]a\s+del\s+cobro\b",
+        r"\bd[ií]a\s+de[l]?\s+vencimiento\b",
+        r"\bel\s+d[ií]a\s+que\s+vence\b",
+        r"\bel\s+d[ií]a\b",
+        r"\b0\s*d[ií]as?\b",
+    ]
+    if any(re.search(pattern, norm) for pattern in same_day_patterns) and 0 not in values:
+        values.append(0)
     values = [v for v in values if v >= 0]
     values.sort(reverse=True)
     return values
