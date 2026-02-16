@@ -185,15 +185,15 @@ def parse_command(
         route = "clear_recurrings"
     else:
         lower = clean.lower()
-        if lower.startswith("recordatorios "):
+        if lower.startswith("recordatorios ") or lower.startswith("reminders "):
             route = "recurring_edit"
-        elif lower.startswith("monto "):
+        elif lower.startswith("monto ") or lower.startswith("amount "):
             route = "recurring_update_amount"
-        elif lower.startswith("cancelar "):
+        elif lower.startswith("cancelar ") or lower.startswith("cancel "):
             route = "recurring_cancel"
-        elif lower.startswith("pausar "):
+        elif lower.startswith("pausar ") or lower.startswith("pausa ") or lower.startswith("pause "):
             route = "recurring_toggle"
-        elif lower.startswith("activar "):
+        elif lower.startswith("activar ") or lower.startswith("activa ") or lower.startswith("activate "):
             route = "recurring_toggle"
         elif re.search(r"^(recu[eé]rdame|recordame|recuerdame)\s+pagar\b", lower):
             route = "recurring_create"

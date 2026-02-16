@@ -32,7 +32,7 @@ async def on_startup() -> None:
     scheduler = AsyncIOScheduler(timezone=settings.timezone or "America/Bogota")
     scheduler.add_job(
         process_recurring_reminders,
-        CronTrigger(hour=9, minute=0),
+        CronTrigger(minute=0),
         args=[pipeline._get_repo(), telegram_app.bot, settings, evolution_client],
         max_instances=1,
         coalesce=True,

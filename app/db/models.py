@@ -116,6 +116,7 @@ class RecurringExpense(Base):
     payment_link: Mapped[str] = mapped_column(Text, nullable=True)
     payment_reference: Mapped[str] = mapped_column(Text, nullable=True)
     remind_offsets: Mapped[JSON] = mapped_column(JSONB, nullable=False, default=list)
+    reminder_hour: Mapped[int] = mapped_column(nullable=False, default=9)
     next_due: Mapped[Date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     auto_add_transaction: Mapped[Boolean] = mapped_column(Boolean, nullable=False, default=True)

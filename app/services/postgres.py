@@ -384,6 +384,7 @@ class PostgresRepo:
             "payment_link": data.get("payment_link"),
             "payment_reference": data.get("payment_reference"),
             "remind_offsets": json.dumps(data.get("remind_offsets") or [3, 1]),
+            "reminder_hour": data.get("reminder_hour", 9),
             "next_due": data.get("next_due"),
             "status": data.get("status") or "pending",
             "auto_add_transaction": bool(data.get("auto_add_transaction", True)),
@@ -399,12 +400,12 @@ class PostgresRepo:
                     insert into recurring_expenses (
                         user_id, service_name, recurrence_id, normalized_merchant, description, category, amount, currency,
                         recurrence, billing_day, billing_weekday, billing_month, anchor_date, timezone, payment_link,
-                        payment_reference, remind_offsets, next_due, status, auto_add_transaction, canceled_at,
+                        payment_reference, remind_offsets, reminder_hour, next_due, status, auto_add_transaction, canceled_at,
                         source_tx_id, created_at, updated_at
                     ) values (
                         :user_id, :service_name, :recurrence_id, :normalized_merchant, :description, :category, :amount, :currency,
                         :recurrence, :billing_day, :billing_weekday, :billing_month, :anchor_date, :timezone, :payment_link,
-                        :payment_reference, cast(:remind_offsets as jsonb), :next_due, :status, :auto_add_transaction, :canceled_at,
+                        :payment_reference, cast(:remind_offsets as jsonb), :reminder_hour, :next_due, :status, :auto_add_transaction, :canceled_at,
                         :source_tx_id, :created_at, :updated_at
                     )
                     returning *
@@ -553,7 +554,8 @@ class PostgresRepo:
             """
             select b.*, r.user_id, r.service_name, r.currency, r.category, r.description,
                    r.normalized_merchant, r.recurrence, r.recurrence_id, r.auto_add_transaction,
-                   r.payment_link as recurring_payment_link, r.payment_reference as recurring_payment_reference
+                   r.payment_link as recurring_payment_link, r.payment_reference as recurring_payment_reference,
+                   r.timezone, r.reminder_hour
             from bill_instances b
             join recurring_expenses r on r.id = b.recurring_id
             where b.status = 'pending'

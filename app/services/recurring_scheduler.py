@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -13,6 +14,30 @@ from app.core.config import Settings
 from app.core.logging import logger
 from app.services.evolution import EvolutionClient
 from app.services.repositories import DataRepo
+
+
+def _today_for_timezone(tz_name: str) -> date:
+    try:
+        return datetime.now(ZoneInfo(tz_name)).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        return datetime.now(ZoneInfo("America/Bogota")).date()
+
+
+def _hour_for_timezone(tz_name: str) -> int:
+    try:
+        return datetime.now(ZoneInfo(tz_name)).hour
+    except (ZoneInfoNotFoundError, ValueError):
+        return datetime.now(ZoneInfo("America/Bogota")).hour
+
+
+def _parse_reminder_hour(value: Any, default: int = 9) -> int:
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        return default
+    if 0 <= hour <= 23:
+        return hour
+    return default
 
 
 def _build_keyboard(actions: Iterable[tuple[str, str]]) -> InlineKeyboardMarkup:
@@ -104,6 +129,9 @@ async def process_recurring_reminders(
     follow_ups = repo.list_due_follow_up_bill_instances(today.isoformat())
     for bill in follow_ups:
         try:
+            tz_name = str(bill.get("timezone") or settings.timezone or "America/Bogota")
+            if _hour_for_timezone(tz_name) != _parse_reminder_hour(bill.get("reminder_hour"), default=9):
+                continue
             reminder_id = repo.create_bill_reminder_if_missing(
                 int(bill["id"]),
                 -1,
@@ -173,11 +201,15 @@ async def process_recurring_reminders(
             billing_day = recurring.get("billing_day")
             billing_weekday = recurring.get("billing_weekday")
             billing_month = recurring.get("billing_month")
+            tz_name = str(recurring.get("timezone") or settings.timezone or "America/Bogota")
+            local_today = _today_for_timezone(tz_name)
+            if _hour_for_timezone(tz_name) != _parse_reminder_hour(recurring.get("reminder_hour"), default=9):
+                continue
 
-            if next_due is None or next_due < today:
+            if next_due is None or next_due < local_today:
                 next_due = compute_next_due(
                     recurrence,
-                    today,
+                    local_today,
                     billing_day,
                     billing_weekday,
                     billing_month,
@@ -201,7 +233,7 @@ async def process_recurring_reminders(
 
             for offset in offsets:
                 reminder_date = next_due - timedelta(days=int(offset))
-                if reminder_date != today:
+                if reminder_date != local_today:
                     continue
 
                 reminder_id = repo.create_bill_reminder_if_missing(

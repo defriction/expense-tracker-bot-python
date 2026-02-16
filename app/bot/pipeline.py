@@ -732,7 +732,7 @@ class BotPipeline(PipelineBase):
             return (
                 "ℹ️ Este gasto ya tiene un recordatorio recurrente activo.\n"
                 f"ID: <code>{recurring_id}</code>\n\n"
-                "Para actualizarlo usa:\n"
+                "Comandos disponibles:\n"
                 f"• <code>recordatorios {recurring_id} 3,1,0</code>\n"
                 f"• <code>monto {recurring_id} 45000</code>\n"
                 f"• <code>pausar {recurring_id}</code> / <code>activar {recurring_id}</code> / <code>cancelar {recurring_id}</code>\n"
@@ -1012,6 +1012,8 @@ class BotPipeline(PipelineBase):
                     int(existing.get("id")),
                     {"anchor_date": tx_date.isoformat(), "billing_month": tx_date.month},
                 )
+            if existing.get("reminder_hour") is None:
+                self._get_repo().update_recurring_expense(int(existing.get("id")), {"reminder_hour": 9})
             return existing
 
         return self._get_repo().create_recurring_expense(
@@ -1029,6 +1031,7 @@ class BotPipeline(PipelineBase):
                 "anchor_date": tx_date.isoformat(),
                 "timezone": self.settings.timezone or "America/Bogota",
                 "remind_offsets": [3, 1, 0],
+                "reminder_hour": 9,
                 "status": "pending",
                 "source_tx_id": tx.get("txId"),
             }
@@ -1105,6 +1108,7 @@ class BotPipeline(PipelineBase):
                     "anchor_date": today.isoformat(),
                     "timezone": self.settings.timezone or "America/Bogota",
                     "remind_offsets": [3, 1, 0],
+                    "reminder_hour": 9,
                     "status": "pending",
                     "source_tx_id": None,
                 }
@@ -1116,7 +1120,14 @@ class BotPipeline(PipelineBase):
             "recurrence": recurrence,
         }
         self._upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, pending_state)
-        intro = f"✅ Perfecto. Voy a configurar el recordatorio para <b>{service_name}</b> ({recurrence})."
+        recurrence_label = {
+            "weekly": "semanal",
+            "biweekly": "quincenal",
+            "monthly": "mensual",
+            "quarterly": "trimestral",
+            "yearly": "anual",
+        }.get(str(recurrence), str(recurrence))
+        intro = f"✅ Perfecto. Voy a configurar el recordatorio para <b>{service_name}</b> ({recurrence_label})."
         return self._make_message(
             f"{intro}\n\n{build_setup_question(step, recurrence)}",
             _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]),
@@ -1152,7 +1163,10 @@ class BotPipeline(PipelineBase):
         result = handle_setup_step(step, text or "", recurrence)
         if result.response:
             follow = build_setup_question(step, recurrence)
-            return self._make_message(f"{result.response}\n\n{follow}", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+            keyboard = _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
+            if step in {"ask_payment_link", "ask_payment_reference"}:
+                keyboard = _kb([ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP])
+            return self._make_message(f"{result.response}\n\n{follow}", keyboard)
 
         updates = result.updates or {}
         if updates:
@@ -1182,7 +1196,10 @@ class BotPipeline(PipelineBase):
         next_step = result.next_step or step
         state["step"] = next_step
         self._upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, state)
-        return self._make_message(build_setup_question(next_step, recurrence), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+        keyboard = _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
+        if next_step in {"ask_payment_link", "ask_payment_reference"}:
+            keyboard = _kb([ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP])
+        return self._make_message(build_setup_question(next_step, recurrence), keyboard)
 
     def _handle_recurring_edit(self, user: Dict[str, Any], text: str, pending: Optional[Dict[str, Any]] = None) -> BotMessage:
         if pending is None:
@@ -1235,6 +1252,10 @@ class BotPipeline(PipelineBase):
         if len(parts) < 2:
             return self._make_message("ℹ️ Uso: <code>pausar ID</code> o <code>activar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         action = parts[0]
+        if action in {"pausa", "pause"}:
+            action = "pausar"
+        elif action in {"activa", "activate"}:
+            action = "activar"
         try:
             recurring_id = int(parts[1])
         except ValueError:

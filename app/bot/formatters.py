@@ -222,12 +222,31 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
         merchant = escape_html(
             str(item.get("service_name") or item.get("normalized_merchant") or item.get("description") or "Gasto recurrente")
         )
-        recurrence = escape_html(str(item.get("recurrence") or "monthly"))
-        status = escape_html(str(item.get("status") or "pending"))
+        recurrence_raw = str(item.get("recurrence") or "monthly").lower()
+        recurrence = {
+            "weekly": "semanal",
+            "biweekly": "quincenal",
+            "monthly": "mensual",
+            "quarterly": "trimestral",
+            "yearly": "anual",
+        }.get(recurrence_raw, recurrence_raw)
+        status_raw = str(item.get("status") or "pending").lower()
+        status = {
+            "active": "activo",
+            "paused": "pausado",
+            "pending": "pendiente",
+            "canceled": "cancelado",
+        }.get(status_raw, status_raw)
         next_due = escape_html(str(item.get("next_due") or "—"))
+        reminder_hour = item.get("reminder_hour")
+        try:
+            reminder_hour_label = f"{int(reminder_hour):02d}:00"
+        except (TypeError, ValueError):
+            reminder_hour_label = "09:00"
         message.append(f"<b>ID:</b> <code>{rid}</code> · <b>{amount}</b>")
-        message.append(f"{merchant} · {recurrence} · <b>{status}</b>")
+        message.append(f"{merchant} · {escape_html(recurrence)} · <b>{escape_html(status)}</b>")
         message.append(f"<b>Próximo cobro:</b> <code>{next_due}</code>")
+        message.append(f"<b>Hora recordatorio:</b> <code>{escape_html(reminder_hour_label)}</code>")
         message.append("")
 
     message.append("Cómo actualizar uno:")

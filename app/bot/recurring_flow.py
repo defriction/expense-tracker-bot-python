@@ -70,6 +70,33 @@ def parse_remind_offsets(text: str) -> list[int]:
     return values
 
 
+def parse_reminder_hour(text: str) -> Optional[int]:
+    t = _normalize_text(text)
+    match_ampm = re.search(r"\b(\d{1,2})\s*([ap])\.?m?\.?\b", t)
+    if match_ampm:
+        try:
+            hour = int(match_ampm.group(1))
+        except ValueError:
+            return None
+        if hour < 1 or hour > 12:
+            return None
+        suffix = match_ampm.group(2)
+        if suffix == "a":
+            return 0 if hour == 12 else hour
+        return 12 if hour == 12 else hour + 12
+
+    match_hhmm = re.search(r"\b(\d{1,2})(?::\d{1,2})?\b", t)
+    if not match_hhmm:
+        return None
+    try:
+        hour = int(match_hhmm.group(1))
+    except ValueError:
+        return None
+    if 0 <= hour <= 23:
+        return hour
+    return None
+
+
 def parse_amount(text: str) -> Optional[float]:
     raw = (text or "").lower().replace("$", "").replace(".", "")
     raw = re.sub(
@@ -234,6 +261,8 @@ def build_setup_question(step: str, recurrence: str) -> str:
         return "¿Qué día del mes se cobra? Escribe un número de <code>1</code> a <code>31</code>."
     if step == "ask_reminders":
         return "¿Cuándo quieres los recordatorios? Ej: <code>3,1,0</code> (3 días antes, 1 día antes y el día del cobro)."
+    if step == "ask_reminder_hour":
+        return "¿A qué hora te recordamos? Ej: <code>08:00</code> o <code>20</code> (formato 24 horas)."
     if step == "ask_payment_link":
         return "¿Tienes enlace de pago? Envíalo o escribe <code>no</code>."
     if step == "ask_payment_reference":
@@ -281,6 +310,11 @@ def build_setup_summary(recurring: Dict[str, Any], settings: Settings) -> str:
     offsets = [int(v) for v in offsets if isinstance(v, (int, float, str)) and str(v).isdigit()]
     offsets = sorted(set(offsets), reverse=True)
     offsets_label = ", ".join([f"-{v}" if v else "0" for v in offsets]) if offsets else "0"
+    reminder_hour = recurring.get("reminder_hour")
+    try:
+        reminder_hour_label = f"{int(reminder_hour):02d}:00"
+    except (TypeError, ValueError):
+        reminder_hour_label = "09:00"
     return (
         "✅ <b>Recurrente configurado</b>\n"
         f"<b>Servicio:</b> {escape_html(str(service_name))}\n"
@@ -288,6 +322,7 @@ def build_setup_summary(recurring: Dict[str, Any], settings: Settings) -> str:
         f"<b>Frecuencia:</b> {escape_html(recurrence)}\n"
         f"<b>Vencimiento:</b> {escape_html(detail)}\n"
         f"<b>Recordatorios:</b> {escape_html(offsets_label)}\n"
+        f"<b>Hora recordatorio:</b> {escape_html(reminder_hour_label)}\n"
         f"<b>Enlace:</b> {escape_html(str(link))}\n"
         f"<b>Referencia:</b> {escape_html(str(ref))}\n"
         f"<b>Zona horaria:</b> {escape_html(tz)}"
@@ -318,7 +353,13 @@ def handle_setup_step(step: str, text: str, recurrence: str) -> SetupResult:
         offsets = parse_remind_offsets(text)
         if not offsets:
             return SetupResult("⚠️ No entendí los recordatorios. Usa este formato: <code>3,1,0</code>.")
-        return SetupResult("", updates={"remind_offsets": offsets}, next_step="ask_payment_link")
+        return SetupResult("", updates={"remind_offsets": offsets}, next_step="ask_reminder_hour")
+
+    if step == "ask_reminder_hour":
+        hour = parse_reminder_hour(text)
+        if hour is None:
+            return SetupResult("⚠️ No entendí la hora. Usa formato 24 horas, por ejemplo: <code>08:00</code> o <code>20</code>.")
+        return SetupResult("", updates={"reminder_hour": hour}, next_step="ask_payment_link")
 
     if step == "ask_payment_link":
         if is_negative(text):
