@@ -67,7 +67,7 @@ Recomendadas:
 Opcionales:
 
 - `ADMIN_TELEGRAM_CHAT_ID`
-- `INVITE_ADMIN_API_KEY` (protege `POST /admin/invites`)
+- `INVITE_ADMIN_API_KEY` (protege `GET /admin/invites`)
 - `REDIS_URL`
 - `EVOLUTION_API_URL`
 - `EVOLUTION_API_KEY`
@@ -83,15 +83,13 @@ Opcionales:
 
 Endpoint interno para emitir tokens de onboarding:
 
-- `POST /admin/invites`
-- Header requerido: `X-Admin-Api-Key: <INVITE_ADMIN_API_KEY>`
-- Body opcional:
+- `GET /admin/invites`
+- Auth (cualquiera de las dos):
+  - Header: `X-Admin-Api-Key: <INVITE_ADMIN_API_KEY>`
+  - Query param: `api_key=<INVITE_ADMIN_API_KEY>`
+- Query param opcional: `actor_user_id` (máx. 64 chars)
 
-```json
-{
-  "actor_user_id": "USR-ADMIN-123"
-}
-```
+Ejemplo browser: `GET /admin/invites?api_key=TU_KEY&actor_user_id=USR-ADMIN-123`
 
 Respuesta:
 
