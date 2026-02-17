@@ -161,6 +161,8 @@ def parse_command(
     invite_token = ""
     if clean.lower().startswith("recurring:"):
         route = "recurring_action"
+    if clean.lower().startswith("dailynudge:"):
+        route = "daily_nudge_action"
     if first_token == "/start":
         if args:
             route = "onboarding"

@@ -74,6 +74,32 @@ def _reminder_text(recurring: Dict[str, Any], due_date: date, offset: int) -> st
     )
 
 
+def _daily_expense_nudge_text() -> str:
+    return (
+        "🧾 <b>Cierre del día</b>\n"
+        "Hoy aún no veo gastos registrados.\n\n"
+        "Si tuviste alguno, este es buen momento para dejarlo guardado y mantener tu control al día.\n"
+        "Ejemplo: <code>almuerzo 18000</code>"
+    )
+
+
+def _daily_nudge_prefs(repo: DataRepo, user_id: str) -> tuple[bool, int]:
+    pending = repo.get_pending_action(user_id, "daily_nudge_prefs")
+    state: Dict[str, Any] = {}
+    if pending:
+        raw = pending.get("state") or {}
+        if isinstance(raw, str):
+            try:
+                raw = __import__("json").loads(raw)
+            except Exception:
+                raw = {}
+        if isinstance(raw, dict):
+            state = raw
+    enabled = bool(state.get("enabled", True))
+    hour = _parse_reminder_hour(state.get("hour"), default=19)
+    return enabled, hour
+
+
 def _extract_anchor_date(recurring: Dict[str, Any]) -> Optional[date]:
     value = recurring.get("anchor_date")
     if isinstance(value, date):
@@ -118,12 +144,95 @@ def _extract_offsets(recurring: Dict[str, Any]) -> list[int]:
     return []
 
 
+async def _process_daily_expense_nudges(
+    repo: DataRepo,
+    bot,
+    settings: Settings,
+    evolution_client: Optional[EvolutionClient],
+) -> None:
+    scheduler_tz = str(settings.timezone or "America/Bogota")
+    current_hour = _hour_for_timezone(scheduler_tz)
+    today = _today_for_timezone(scheduler_tz)
+    prompt_text = _daily_expense_nudge_text()
+    actions = [
+        ("/list", "🧾 Ver movimientos"),
+        ("/summary", "📊 Resumen"),
+        ("dailynudge:set_hour", "🕖 Cambiar hora"),
+        ("dailynudge:silence", "🔕 Silenciar"),
+    ]
+
+    channel_map: Dict[str, Dict[str, str]] = {}
+    for item in repo.list_active_users_with_chat("telegram"):
+        user_id = str(item.get("user_id") or "")
+        chat_id = str(item.get("chat_id") or "")
+        if user_id and chat_id:
+            channel_map.setdefault(user_id, {})["telegram"] = chat_id
+    for item in repo.list_active_users_with_chat("evolution"):
+        user_id = str(item.get("user_id") or "")
+        chat_id = str(item.get("chat_id") or "")
+        if user_id and chat_id:
+            channel_map.setdefault(user_id, {})["evolution"] = chat_id
+
+    for user_id, channels in channel_map.items():
+        try:
+            enabled, preferred_hour = _daily_nudge_prefs(repo, user_id)
+            if not enabled:
+                continue
+            if preferred_hour != current_hour:
+                continue
+
+            action_type = f"daily_nudge_{today.strftime('%Y%m%d')}"
+            if repo.get_pending_action(user_id, action_type):
+                continue
+            if repo.has_expense_for_date(user_id, today.isoformat()):
+                continue
+
+            delivered = False
+            telegram_chat = channels.get("telegram")
+            if telegram_chat:
+                try:
+                    await bot.send_message(
+                        chat_id=int(telegram_chat),
+                        text=prompt_text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=_build_keyboard(actions),
+                    )
+                    delivered = True
+                except Exception as exc:
+                    logger.warning("Daily nudge telegram send failed user_id=%s error=%s", user_id, exc)
+
+            evolution_chat = channels.get("evolution")
+            if evolution_client and evolution_chat:
+                try:
+                    await send_evolution_message(
+                        evolution_client,
+                        str(evolution_chat),
+                        _build_bot_message(prompt_text, actions),
+                    )
+                    delivered = True
+                except Exception as exc:
+                    logger.warning("Daily nudge evolution send failed user_id=%s error=%s", user_id, exc)
+
+            if delivered:
+                repo.upsert_pending_action(
+                    user_id,
+                    action_type,
+                    {"kind": "daily_expense_nudge", "date": today.isoformat()},
+                    expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+                )
+        except Exception as exc:
+            logger.warning("Daily expense nudge failed user_id=%s error=%s", user_id, exc)
+
+
 async def process_recurring_reminders(
     repo: DataRepo,
     bot,
     settings: Settings,
     evolution_client: Optional[EvolutionClient] = None,
 ) -> None:
+    await _process_daily_expense_nudges(repo, bot, settings, evolution_client)
+
     today = get_today(settings)
     repo.mark_overdue_bill_instances(today.isoformat())
     follow_ups = repo.list_due_follow_up_bill_instances(today.isoformat())

@@ -75,6 +75,8 @@ class DataRepo(Protocol):
     def update_bill_reminder(self, reminder_id: int, updates: Dict[str, Any]) -> None: ...
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]: ...
+    def list_active_users_with_chat(self, channel: str) -> list[Dict[str, str]]: ...
+    def has_expense_for_date(self, user_id: str, date_iso: str) -> bool: ...
 
     def upsert_pending_action(
         self,
@@ -216,6 +218,12 @@ class CompositeRepo:
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         return self.primary.get_user_chat_id(user_id, channel)
+
+    def list_active_users_with_chat(self, channel: str) -> list[Dict[str, str]]:
+        return self.primary.list_active_users_with_chat(channel)
+
+    def has_expense_for_date(self, user_id: str, date_iso: str) -> bool:
+        return self.primary.has_expense_for_date(user_id, date_iso)
 
     def upsert_pending_action(
         self,

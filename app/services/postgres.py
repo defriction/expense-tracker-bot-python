@@ -625,6 +625,45 @@ class PostgresRepo:
             row = session.execute(sql, {"user_id": user_id, "channel": channel}).mappings().first()
             return row["external_chat_id"] if row else None
 
+    def list_active_users_with_chat(self, channel: str) -> list[Dict[str, str]]:
+        sql = text(
+            """
+            select distinct on (u.id) u.id as user_id, i.external_chat_id as chat_id
+            from users u
+            join user_identities i on i.user_id = u.id
+            where u.status = 'active'
+              and i.channel = :channel
+              and i.external_chat_id is not null
+              and i.external_chat_id <> ''
+            order by u.id, i.id desc
+            """
+        )
+        with self._session() as session:
+            rows = session.execute(sql, {"channel": channel}).mappings().all()
+            return [{"user_id": str(row["user_id"]), "chat_id": str(row["chat_id"])} for row in rows]
+
+    def has_expense_for_date(self, user_id: str, date_iso: str) -> bool:
+        sql = text(
+            """
+            select 1
+            from transactions
+            where user_id = :user_id
+              and is_deleted = false
+              and lower(type) = 'expense'
+              and (
+                    date = :target_date
+                    or (
+                        date is null
+                        and (created_at at time zone 'UTC')::date = :target_date
+                    )
+                )
+            limit 1
+            """
+        )
+        with self._session() as session:
+            row = session.execute(sql, {"user_id": user_id, "target_date": date_iso}).first()
+            return row is not None
+
     def upsert_pending_action(
         self,
         user_id: str,
@@ -787,6 +826,12 @@ class ResilientPostgresRepo:
 
     def get_user_chat_id(self, user_id: str, channel: str = "telegram") -> Optional[str]:
         return self.repo.get_user_chat_id(user_id, channel)
+
+    def list_active_users_with_chat(self, channel: str) -> list[Dict[str, str]]:
+        return self.repo.list_active_users_with_chat(channel)
+
+    def has_expense_for_date(self, user_id: str, date_iso: str) -> bool:
+        return self.repo.has_expense_for_date(user_id, date_iso)
 
     def upsert_pending_action(
         self,

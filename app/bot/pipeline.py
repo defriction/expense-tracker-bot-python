@@ -61,6 +61,8 @@ RECURRING_INVALID_ACTION_MESSAGE = "⚠️ <b>Acción inválida</b>"
 PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 PENDING_CLEAR_ALL_CONFIRM = "clear_all_confirm"
 PENDING_CLEAR_RECURRINGS_CONFIRM = "clear_recurrings_confirm"
+PENDING_DAILY_NUDGE_SET_HOUR = "daily_nudge_set_hour"
+DAILY_NUDGE_PREFS_ACTION = "daily_nudge_prefs"
 PENDING_ACTION_TTL_MINUTES = 20
 PENDING_EXPIRED_MESSAGE = (
     "⌛ <b>Esta confirmación expiró</b>\n"
@@ -543,6 +545,8 @@ class BotPipeline(PipelineBase):
             return [self._handle_recurring_cancel(auth_result.user, command.text)]
         if command.route == "recurring_toggle":
             return [self._handle_recurring_toggle(auth_result.user, command.text)]
+        if command.route == "daily_nudge_action":
+            return [self._handle_daily_nudge_action(auth_result.user, command.text)]
         if command.route == "ai":
             natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
             if natural_ai is not None:
@@ -585,7 +589,7 @@ class BotPipeline(PipelineBase):
             keyboard = _kb_main()
             return [self._make_message(HELP_MESSAGE, keyboard)]
 
-        if command.route in {"list", "summary", "download", "undo", "clear_all", "clear_recurrings", "ai", "recurring_action", "recurrings"}:
+        if command.route in {"list", "summary", "download", "undo", "clear_all", "clear_recurrings", "ai", "recurring_action", "recurrings", "daily_nudge_action"}:
             auth_result = self.auth_flow.require_active_user(
                 request.channel,
                 str(external_user_id) if external_user_id is not None else None,
@@ -616,6 +620,8 @@ class BotPipeline(PipelineBase):
                 return [await self.command_flow.handle_clear_recurrings(auth_result.user, chat_id)]
             elif command.route == "recurring_action":
                 return [self._handle_recurring_action(auth_result.user, command.text)]
+            elif command.route == "daily_nudge_action":
+                return [self._handle_daily_nudge_action(auth_result.user, command.text)]
             else:
                 if command.route == "ai":
                     pending_response = self._handle_pending_actions(
@@ -708,6 +714,10 @@ class BotPipeline(PipelineBase):
                 PENDING_CLEAR_RECURRINGS_CONFIRM,
                 lambda p: self._handle_clear_recurrings_confirm(user, command.text, p),
             ),
+            (
+                PENDING_DAILY_NUDGE_SET_HOUR,
+                lambda p: self._handle_daily_nudge_set_hour(user, command.text, p),
+            ),
         ]
         for action_type, handler in checks:
             pending, expired = self._get_pending_action_state(user_id, action_type)
@@ -724,6 +734,40 @@ class BotPipeline(PipelineBase):
             return __import__("datetime").date.fromisoformat(value)
         except ValueError:
             return None
+
+    def _get_daily_nudge_prefs(self, user_id: str) -> Dict[str, Any]:
+        pending = self._get_repo().get_pending_action(user_id, DAILY_NUDGE_PREFS_ACTION)
+        state: Dict[str, Any] = {}
+        if pending:
+            raw = pending.get("state") or {}
+            if isinstance(raw, str):
+                try:
+                    raw = __import__("json").loads(raw)
+                except Exception:
+                    raw = {}
+            if isinstance(raw, dict):
+                state = raw
+        enabled = bool(state.get("enabled", True))
+        try:
+            hour = int(state.get("hour", 19))
+        except (TypeError, ValueError):
+            hour = 19
+        if hour < 0 or hour > 23:
+            hour = 19
+        return {"enabled": enabled, "hour": hour}
+
+    def _save_daily_nudge_prefs(self, user_id: str, enabled: bool, hour: int) -> None:
+        safe_hour = max(0, min(23, int(hour)))
+        self._get_repo().upsert_pending_action(
+            user_id,
+            DAILY_NUDGE_PREFS_ACTION,
+            {"enabled": bool(enabled), "hour": safe_hour},
+            expires_at=None,
+        )
+
+    @staticmethod
+    def _hour_label(hour: int) -> str:
+        return f"{int(hour):02d}:00"
 
     def _offer_recurring_setup(self, tx: Dict[str, Any]) -> str:
         if not tx.get("isRecurring"):
@@ -1561,6 +1605,57 @@ class BotPipeline(PipelineBase):
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         self._get_repo().update_recurring_expense(recurring_id, {"status": "canceled", "canceled_at": now})
         return self._make_message("🛑 Recurrente cancelado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+
+    def _handle_daily_nudge_set_hour(self, user: Dict[str, Any], text: str, pending: Dict[str, Any]) -> BotMessage:
+        content = (text or "").strip()
+        if is_negative(content):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("✅ Entendido. Mantengo la hora actual.", _kb_main())
+        hour = parse_reminder_hour(content)
+        if hour is None:
+            return self._make_message(
+                "🕖 Envíame la nueva hora del recordatorio.\nEjemplos: <code>19</code>, <code>7 pm</code>, <code>21:30</code>.",
+                _kb([ACTION_CONFIRM_NO], [ACTION_HELP]),
+            )
+        user_id = str(user.get("userId"))
+        self._save_daily_nudge_prefs(user_id, enabled=True, hour=int(hour))
+        self._get_repo().delete_pending_action(int(pending["id"]))
+        return self._make_message(
+            f"✅ Listo. Te preguntaré por gastos cada día a las <b>{self._hour_label(int(hour))}</b>.",
+            _kb_main(),
+        )
+
+    def _handle_daily_nudge_action(self, user: Dict[str, Any], data: str) -> BotMessage:
+        parts = (data or "").split(":")
+        if len(parts) < 2:
+            return self._make_message(RECURRING_INVALID_ACTION_MESSAGE)
+        action = parts[1].strip().lower()
+        user_id = str(user.get("userId"))
+        prefs = self._get_daily_nudge_prefs(user_id)
+        current_hour = int(prefs.get("hour", 19))
+
+        if action == "silence":
+            self._save_daily_nudge_prefs(user_id, enabled=False, hour=current_hour)
+            return self._make_message(
+                "🔕 Recordatorio diario silenciado.\nSi quieres reactivarlo, pulsa el botón.",
+                _kb([BotAction("dailynudge:enable", "🔔 Activar recordatorio")], [ACTION_HELP]),
+            )
+
+        if action == "enable":
+            self._save_daily_nudge_prefs(user_id, enabled=True, hour=current_hour)
+            return self._make_message(
+                f"🔔 Recordatorio diario activado a las <b>{self._hour_label(current_hour)}</b>.",
+                _kb([BotAction("dailynudge:set_hour", "🕖 Cambiar hora")], [ACTION_HELP]),
+            )
+
+        if action == "set_hour":
+            self._upsert_pending_action(user_id, PENDING_DAILY_NUDGE_SET_HOUR, {"from": "daily_nudge"}, ttl_minutes=60)
+            return self._make_message(
+                "🕖 ¿A qué hora quieres el recordatorio diario?\nResponde con una hora. Ej: <code>19</code> o <code>7 pm</code>.",
+                _kb([ACTION_CONFIRM_NO], [ACTION_HELP]),
+            )
+
+        return self._make_message(RECURRING_INVALID_ACTION_MESSAGE)
 
     def _handle_recurring_action(self, user: Dict[str, Any], data: str) -> BotMessage:
         parts = (data or "").split(":")
