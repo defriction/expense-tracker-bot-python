@@ -749,11 +749,11 @@ class BotPipeline(PipelineBase):
                 state = raw
         enabled = bool(state.get("enabled", True))
         try:
-            hour = int(state.get("hour", 19))
+            hour = int(state.get("hour", 21))
         except (TypeError, ValueError):
-            hour = 19
+            hour = 21
         if hour < 0 or hour > 23:
-            hour = 19
+            hour = 21
         return {"enabled": enabled, "hour": hour}
 
     def _save_daily_nudge_prefs(self, user_id: str, enabled: bool, hour: int) -> None:
@@ -1614,7 +1614,7 @@ class BotPipeline(PipelineBase):
         hour = parse_reminder_hour(content)
         if hour is None:
             return self._make_message(
-                "🕖 Envíame la nueva hora del recordatorio.\nEjemplos: <code>19</code>, <code>7 pm</code>, <code>21:30</code>.",
+                "🕖 Envíame la nueva hora del recordatorio.\nEjemplos: <code>21</code>, <code>9 pm</code>, <code>21:30</code>.",
                 _kb([ACTION_CONFIRM_NO], [ACTION_HELP]),
             )
         user_id = str(user.get("userId"))
@@ -1632,7 +1632,7 @@ class BotPipeline(PipelineBase):
         action = parts[1].strip().lower()
         user_id = str(user.get("userId"))
         prefs = self._get_daily_nudge_prefs(user_id)
-        current_hour = int(prefs.get("hour", 19))
+        current_hour = int(prefs.get("hour", 21))
 
         if action == "silence":
             self._save_daily_nudge_prefs(user_id, enabled=False, hour=current_hour)
@@ -1651,7 +1651,7 @@ class BotPipeline(PipelineBase):
         if action == "set_hour":
             self._upsert_pending_action(user_id, PENDING_DAILY_NUDGE_SET_HOUR, {"from": "daily_nudge"}, ttl_minutes=60)
             return self._make_message(
-                "🕖 ¿A qué hora quieres el recordatorio diario?\nResponde con una hora. Ej: <code>19</code> o <code>7 pm</code>.",
+                "🕖 ¿A qué hora quieres el recordatorio diario?\nResponde con una hora. Ej: <code>21</code> o <code>9 pm</code>.",
                 _kb([ACTION_CONFIRM_NO], [ACTION_HELP]),
             )
 

@@ -96,7 +96,7 @@ def _daily_nudge_prefs(repo: DataRepo, user_id: str) -> tuple[bool, int]:
         if isinstance(raw, dict):
             state = raw
     enabled = bool(state.get("enabled", True))
-    hour = _parse_reminder_hour(state.get("hour"), default=19)
+    hour = _parse_reminder_hour(state.get("hour"), default=21)
     return enabled, hour
 
 
