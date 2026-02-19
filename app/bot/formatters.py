@@ -244,7 +244,8 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
             reminder_hour_label = f"{int(reminder_hour):02d}:00"
         except (TypeError, ValueError):
             reminder_hour_label = "09:00"
-        message.append(f"🔹 <b>{merchant}</b> (Código <code>{rid}</code>)")
+        message.append(f"🔹 <b>{merchant}</b>")
+        message.append(f"<b>Código:</b> <code>{rid}</code>")
         message.append(f"<b>Monto:</b> {amount}")
         message.append(f"<b>Frecuencia:</b> {escape_html(recurrence)}")
         message.append(f"<b>Estado:</b> <b>{escape_html(status)}</b>")
