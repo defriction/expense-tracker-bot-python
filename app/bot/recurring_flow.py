@@ -85,28 +85,52 @@ def parse_remind_offsets(text: str) -> list[int]:
 
 def parse_reminder_hour(text: str) -> Optional[int]:
     t = _normalize_text(text)
-    match_ampm = re.search(r"\b(\d{1,2})\s*([ap])\.?m?\.?\b", t)
-    if match_ampm:
+    # Prefer explicit "a las" context to avoid taking day-of-month numbers as hour.
+    match_context_ampm = re.search(
+        r"\ba\s+las?\s+(\d{1,2})(?::\d{1,2})?\s*(a\.?\s*m\.?|p\.?\s*m\.?)\b",
+        t,
+        flags=re.IGNORECASE,
+    )
+    if match_context_ampm:
+        try:
+            hour = int(match_context_ampm.group(1))
+        except ValueError:
+            hour = -1
+        if 1 <= hour <= 12:
+            suffix = match_context_ampm.group(2).replace(" ", "").replace(".", "").lower()
+            if suffix.startswith("a"):
+                return 0 if hour == 12 else hour
+            return 12 if hour == 12 else hour + 12
+
+    for match_ampm in re.finditer(r"\b(\d{1,2})(?::\d{1,2})?\s*(a\.?\s*m\.?|p\.?\s*m\.?)\b", t, flags=re.IGNORECASE):
         try:
             hour = int(match_ampm.group(1))
         except ValueError:
-            return None
+            continue
         if hour < 1 or hour > 12:
-            return None
-        suffix = match_ampm.group(2)
-        if suffix == "a":
+            continue
+        suffix = match_ampm.group(2).replace(" ", "").replace(".", "").lower()
+        if suffix.startswith("a"):
             return 0 if hour == 12 else hour
         return 12 if hour == 12 else hour + 12
 
-    match_hhmm = re.search(r"\b(\d{1,2})(?::\d{1,2})?\b", t)
-    if not match_hhmm:
-        return None
-    try:
-        hour = int(match_hhmm.group(1))
-    except ValueError:
-        return None
-    if 0 <= hour <= 23:
-        return hour
+    match_context_24h = re.search(r"\ba\s+las?\s+(\d{1,2})(?::\d{1,2})?\b", t, flags=re.IGNORECASE)
+    if match_context_24h:
+        try:
+            hour = int(match_context_24h.group(1))
+        except ValueError:
+            hour = -1
+        if 0 <= hour <= 23:
+            return hour
+
+    match_hhmm = re.search(r"\b(\d{1,2}):\d{1,2}\b", t)
+    if match_hhmm:
+        try:
+            hour = int(match_hhmm.group(1))
+        except ValueError:
+            hour = -1
+        if 0 <= hour <= 23:
+            return hour
     return None
 
 
@@ -189,6 +213,7 @@ def parse_service_name(text: str) -> Optional[str]:
         flags=re.IGNORECASE,
     )
     service = re.sub(r"\b(cada\s+semana|cada\s+15\s+d[ií]as|cada\s+3\s+meses|cada\s+a[nñ]o)\b", "", service, flags=re.IGNORECASE)
+    service = re.sub(r"\bel\s+\d{1,2}\b", "", service, flags=re.IGNORECASE)
     service = re.sub(r"\s+", " ", service).strip(" .,")
     service = re.sub(r"\b(de|del|a|al)\b\s*$", "", service, flags=re.IGNORECASE).strip(" .,")
     return service[:128] if service else None

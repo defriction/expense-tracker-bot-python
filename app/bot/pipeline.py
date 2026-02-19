@@ -554,6 +554,9 @@ class BotPipeline(PipelineBase):
         if command.route == "recurrings":
             return [await self.command_flow.handle_recurrings(auth_result.user, chat_id)]
         if command.route == "recurring_create":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
             return [self._start_recurring_from_text(auth_result.user, command.text)]
         if command.route == "download":
             return [await self.command_flow.handle_download(auth_result.user, chat_id)]
@@ -564,12 +567,24 @@ class BotPipeline(PipelineBase):
         if command.route == "clear_recurrings":
             return [await self.command_flow.handle_clear_recurrings(auth_result.user, chat_id)]
         if command.route == "recurring_edit":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
             return [self._handle_recurring_edit(auth_result.user, command.text)]
         if command.route == "recurring_update_amount":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
             return [self._handle_recurring_update_amount(auth_result.user, command.text)]
         if command.route == "recurring_cancel":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
             return [self._handle_recurring_cancel(auth_result.user, command.text)]
         if command.route == "recurring_toggle":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
             return [self._handle_recurring_toggle(auth_result.user, command.text)]
         if command.route == "daily_nudge_action":
             return [self._handle_daily_nudge_action(auth_result.user, command.text)]
@@ -1481,6 +1496,8 @@ class BotPipeline(PipelineBase):
             re.search(r"(?:todos?\s+los|cada)\s+(\d{1,2})\b", lower),
             re.search(r"\b(\d{1,2})\s+de\s+cada\s+mes\b", lower),
             re.search(r"\bel\s+(\d{1,2})\s+de\s+cada\s+mes\b", lower),
+            re.search(r"\bcada\s+mes\s+el\s+(\d{1,2})\b", lower),
+            re.search(r"\bcada\s+mes\s+(\d{1,2})\b", lower),
         ]
         for match in matches:
             if not match:
