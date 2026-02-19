@@ -963,7 +963,8 @@ class BotPipeline(PipelineBase):
             score = 0
             if norm_name in norm_text:
                 score += len(norm_name) + 20
-            tokens = [tok for tok in norm_name.split() if len(tok) >= 4]
+            # Include short merchant tokens like "luz", "gas", "agua".
+            tokens = [tok for tok in norm_name.split() if len(tok) >= 3]
             for tok in tokens:
                 if tok in norm_text:
                     score += len(tok)
@@ -997,7 +998,9 @@ class BotPipeline(PipelineBase):
             r"\b(recordatorio|recordatorios|recurrente|recurrentes|suscripcion|suscripciones)\b",
             r"\b(cada\s+mes|todos?\s+los\s+meses|mensual|semanal|quincenal|trimestral|anual)\b",
             r"\bid\s*#?\s*\d+\b.*\b(cambiar|actualizar|monto|valor|hora|pausar|activar|cancelar)\b",
+            r"\b(codigo|c[oó]digo)\s*#?\s*\d+\b.*\b(cambiar|actualizar|monto|valor|hora|pausar|activar|cancelar)\b",
             r"\b(a\s+las\s+\d{1,2}(:\d{2})?\s*(am|pm)?)\b",
+            r"\b(sube|subir|baja|bajar|ajusta|ajustar|cambia|cambiar|actualiza|actualizar|monto|valor|pausa|pausar|activar|activa|cancelar|cancela)\b",
         ]
         return any(re.search(pattern, t) for pattern in patterns)
 
