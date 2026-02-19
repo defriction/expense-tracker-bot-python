@@ -57,8 +57,8 @@ from app.services.repositories import DataRepo
 
 INVALID_TOKEN_MESSAGE = "🔒 <b>Token inválido</b>\nEl token de invitación no es válido o ya expiró."
 INVALID_TX_MESSAGE = "⚠️ <b>No pude guardar el movimiento</b>\nMonto inválido o categoría faltante. Inténtalo de nuevo."
-RECURRING_NOT_FOUND_MESSAGE = "⚠️ <b>No encontrado</b>\nNo encontré un recurrente con ese ID."
-RECURRING_INVALID_ID_MESSAGE = "⚠️ <b>ID inválido</b>\nEl ID debe ser un número."
+RECURRING_NOT_FOUND_MESSAGE = "⚠️ <b>No encontrado</b>\nNo encontré un recurrente con ese código."
+RECURRING_INVALID_ID_MESSAGE = "⚠️ <b>Código inválido</b>\nEl código debe ser un número."
 RECURRING_INVALID_ACTION_MESSAGE = "⚠️ <b>Acción inválida</b>"
 PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 PENDING_CLEAR_ALL_CONFIRM = "clear_all_confirm"
@@ -207,6 +207,29 @@ class CommandFlow:
         logger.info("Recurrings command chat_id=%s user_id=%s", chat_id, user.get("userId"))
         items = self.pipeline._get_repo().list_recurring_expenses(user.get("userId"))
         items = [item for item in items if str(item.get("status") or "").lower() == "active"]
+        def _sort_key(item: Dict[str, Any]) -> tuple[float, float, int]:
+            def _to_ts(value: Any) -> float:
+                if not value:
+                    return float("-inf")
+                if isinstance(value, datetime):
+                    dt = value
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.timestamp()
+                raw = str(value)
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    return float("-inf")
+            created_ts = _to_ts(item.get("created_at") or item.get("createdAt"))
+            updated_ts = _to_ts(item.get("updated_at") or item.get("updatedAt"))
+            try:
+                rid = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                rid = 0
+            return (updated_ts, created_ts, rid)
+
+        items.sort(key=_sort_key, reverse=True)
         keyboard = _kb_main()
         return self.pipeline._make_message(format_recurring_list_message(items), keyboard)
 
@@ -272,8 +295,8 @@ class CommandFlow:
         )
         return self.pipeline._make_message(
             (
-                f"⚠️ <b>Vas a cancelar {clearable_count} recurrentes</b>\n"
-                "Esta acción detiene sus recordatorios futuros.\n\n"
+                f"⚠️ <b>Vas a eliminar {clearable_count} recurrentes de tu lista</b>\n"
+                "Se detendrán sus recordatorios futuros.\n\n"
                 "Responde <code>sí</code> para confirmar o <code>no</code> para cancelar."
             ),
             _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_HELP]),
@@ -790,7 +813,7 @@ class BotPipeline(PipelineBase):
             recurring_id = existing.get("id")
             return (
                 "ℹ️ Este gasto ya tiene un recordatorio recurrente activo.\n"
-                f"ID: <code>{recurring_id}</code>\n\n"
+                f"Código: <code>{recurring_id}</code>\n\n"
                 "Comandos disponibles:\n"
                 f"• <code>recordatorios {recurring_id} 3 días antes y el mismo día</code>\n"
                 f"• <code>monto {recurring_id} 45000</code>\n"
@@ -882,7 +905,7 @@ class BotPipeline(PipelineBase):
         answer = (text or "").strip()
         if is_negative(answer):
             self._get_repo().delete_pending_action(int(pending["id"]))
-            return self._make_message("✅ Entendido. No cancelé ningún recurrente.", _kb_main())
+            return self._make_message("✅ Entendido. No eliminé ningún recurrente de tu lista.", _kb_main())
         if not is_affirmative(answer):
             return self._make_message(
                 "Responde <code>sí</code> para cancelar todos los recurrentes o <code>no</code> para mantenerlos.",
@@ -897,9 +920,9 @@ class BotPipeline(PipelineBase):
 
         self._get_repo().delete_pending_action(int(pending["id"]))
         if not clearable:
-            return self._make_message("📭 <b>Sin recurrentes</b>\nNo había recurrentes para cancelar.", _kb_main())
+            return self._make_message("📭 <b>Sin recurrentes</b>\nNo había recurrentes para eliminar.", _kb_main())
         return self._make_message(
-            f"🗑️ <b>Listo</b>\nCancelé <b>{len(clearable)}</b> recurrentes.",
+            f"🗑️ <b>Listo</b>\nEliminé <b>{len(clearable)}</b> recurrentes de tu lista.",
             _kb_main(),
         )
 
@@ -939,7 +962,10 @@ class BotPipeline(PipelineBase):
 
     @staticmethod
     def _extract_explicit_id(text: str) -> Optional[int]:
-        match = re.search(r"\bid\s*#?\s*(\d+)\b", text or "", flags=re.IGNORECASE)
+        source = text or ""
+        match = re.search(r"\b(?:id|codigo|c[oó]digo)\s*#?\s*(\d+)\b", source, flags=re.IGNORECASE)
+        if not match:
+            match = re.search(r"#\s*(\d+)\b", source)
         if not match:
             return None
         try:
@@ -1036,7 +1062,7 @@ class BotPipeline(PipelineBase):
         confidence = float(parsed.get("confidence") or 0)
         if confidence < 0.55:
             return self._make_message(
-                "⚠️ No tuve suficiente claridad para aplicar cambios automáticos. Indícame el ID y el cambio puntual, por ejemplo: <code>ID 2 cambiar hora a 18:30</code>.",
+                "⚠️ No tuve suficiente claridad para aplicar cambios automáticos. Indícame el código y el cambio puntual, por ejemplo: <code>código 2 cambiar hora a 18:30</code>.",
                 _kb([ACTION_RECURRINGS, ACTION_HELP]),
             )
         if intent == "list":
@@ -1129,7 +1155,7 @@ class BotPipeline(PipelineBase):
 
         if not updates:
             return self._make_message(
-                "⚠️ Me faltan datos para actualizar ese recurrente. Ejemplo: <code>ID 2 cambiar monto a 56000 y hora 18:30</code>",
+                "⚠️ Me faltan datos para actualizar ese recurrente. Ejemplo: <code>código 2 cambiar monto a 56000 y hora 18:30</code>",
                 _kb([ACTION_RECURRINGS, ACTION_HELP]),
             )
 
@@ -1190,13 +1216,13 @@ class BotPipeline(PipelineBase):
             options = ", ".join([f"<code>{item.get('id')}</code>" for item in matches[:5]])
             return None, self._make_message(
                 "⚠️ Encontré más de un recurrente que coincide.\n"
-                f"IDs posibles: {options}\n"
-                "Escríbelo con ID. Ej: <code>monto ID 45000</code>.",
+                f"Códigos posibles: {options}\n"
+                "Escríbelo con código. Ej: <code>monto código 12 45000</code>.",
                 _kb([ACTION_RECURRINGS, ACTION_HELP]),
             )
         return None, self._make_message(
             "⚠️ No pude identificar cuál recurrente quieres editar.\n"
-            "Primero usa <code>/recurrings</code> y luego envía el ID.",
+            "Primero usa <code>/recurrings</code> y luego envía el código.",
             _kb([ACTION_RECURRINGS, ACTION_HELP]),
         )
 
@@ -1545,14 +1571,18 @@ class BotPipeline(PipelineBase):
         else:
             if len(parts) < 2:
                 return self._make_message(
-                    "ℹ️ Dime el ID y cuándo avisarte.\nEjemplo: <code>recordatorios 12 tres días antes y el mismo día</code>.",
+                    "ℹ️ Dime el código y cuándo avisarte.\nEjemplo: <code>recordatorios código 12 tres días antes y el mismo día</code>.",
                     _kb([ACTION_RECURRINGS, ACTION_HELP]),
                 )
-            try:
-                recurring_id = int(parts[1])
-            except ValueError:
-                return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
-            offsets_text = " ".join(parts[2:]).strip()
+            recurring_id = self._extract_explicit_id(content)
+            if recurring_id is not None:
+                offsets_text = re.sub(r"^\s*recordatorios?\s+(?:codigo|c[oó]digo|id)\s*#?\s*\d+\s*", "", content, flags=re.IGNORECASE).strip()
+            else:
+                try:
+                    recurring_id = int(parts[1])
+                except ValueError:
+                    return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+                offsets_text = " ".join(parts[2:]).strip()
 
         offsets = parse_remind_offsets(offsets_text)
         if not offsets:
@@ -1579,16 +1609,18 @@ class BotPipeline(PipelineBase):
         content = (text or "").strip().lower()
         parts = content.split()
         if len(parts) < 2:
-            return self._make_message("ℹ️ Uso: <code>pausar ID</code> o <code>activar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("ℹ️ Uso: <code>pausar código 12</code> o <code>activar código 12</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         action = parts[0]
         if action in {"pausa", "pause"}:
             action = "pausar"
         elif action in {"activa", "activate"}:
             action = "activar"
-        try:
-            recurring_id = int(parts[1])
-        except ValueError:
-            return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+        recurring_id = self._extract_explicit_id(content)
+        if recurring_id is None:
+            try:
+                recurring_id = int(parts[1])
+            except ValueError:
+                return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
             return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
@@ -1615,12 +1647,19 @@ class BotPipeline(PipelineBase):
     def _handle_recurring_update_amount(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
         if len(parts) < 3:
-            return self._make_message("ℹ️ Uso: <code>monto ID 45000</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
-        try:
-            recurring_id = int(parts[1])
-        except ValueError:
-            return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
-        amount = parse_amount(" ".join(parts[2:]))
+            return self._make_message("ℹ️ Uso: <code>monto código 12 45000</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+        content = (text or "").strip()
+        recurring_id = self._extract_explicit_id(content)
+        amount_text = ""
+        if recurring_id is not None:
+            amount_text = re.sub(r"^\s*(?:monto|amount)\s+(?:codigo|c[oó]digo|id)\s*#?\s*\d+\s*", "", content, flags=re.IGNORECASE).strip()
+        else:
+            try:
+                recurring_id = int(parts[1])
+            except ValueError:
+                return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            amount_text = " ".join(parts[2:])
+        amount = parse_amount(amount_text)
         if amount is None or amount < 0:
             return self._make_message("⚠️ <b>Monto inválido</b>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
@@ -1632,15 +1671,18 @@ class BotPipeline(PipelineBase):
     def _handle_recurring_cancel(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
         if len(parts) < 2:
-            return self._make_message("ℹ️ Uso: <code>cancelar ID</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
-        try:
-            recurring_id = int(parts[1])
-        except ValueError:
-            return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message("ℹ️ Uso: <code>cancelar código 12</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+        content = (text or "").strip()
+        recurring_id = self._extract_explicit_id(content)
+        if recurring_id is None:
+            try:
+                recurring_id = int(parts[1])
+            except ValueError:
+                return self._make_message(RECURRING_INVALID_ID_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
             return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
-        service_name = str(recurring.get("service_name") or recurring.get("normalized_merchant") or recurring.get("description") or f"ID {recurring_id}")
+        service_name = str(recurring.get("service_name") or recurring.get("normalized_merchant") or recurring.get("description") or f"Código {recurring_id}")
         self._upsert_pending_action(
             str(user.get("userId")),
             PENDING_RECURRING_CANCEL_CONFIRM,
@@ -1648,7 +1690,7 @@ class BotPipeline(PipelineBase):
         )
         return self._make_message(
             "⚠️ Vas a cancelar este recurrente:\n"
-            f"<b>{service_name}</b> (ID <code>{recurring_id}</code>)\n\n"
+            f"<b>{service_name}</b> (Código <code>{recurring_id}</code>)\n\n"
             "Responde <code>sí</code> para confirmar o <code>no</code> para mantenerlo activo.",
             _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP]),
         )

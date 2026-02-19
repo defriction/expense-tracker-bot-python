@@ -175,8 +175,22 @@ def parse_service_name(text: str) -> Optional[str]:
         else:
             return None
     service = match.group(1)
-    service = re.sub(r"\b(todos?\s+los\s+\d{1,2}|cada\s+mes|mensual|semanal|quincenal|trimestral|anual)\b", "", service, flags=re.IGNORECASE)
+    # Remove scheduling/time phrases so the service key remains stable for search/update.
+    service = re.sub(
+        r"\b(todos?\s+los\s+\d{1,2}(?:\s+de\s+cada\s+mes)?|cada\s+mes|de\s+cada\s+mes|mensual|semanal|quincenal|trimestral|anual)\b",
+        "",
+        service,
+        flags=re.IGNORECASE,
+    )
+    service = re.sub(
+        r"\b(a\s+las?\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?|a\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?)\b",
+        "",
+        service,
+        flags=re.IGNORECASE,
+    )
+    service = re.sub(r"\b(cada\s+semana|cada\s+15\s+d[ií]as|cada\s+3\s+meses|cada\s+a[nñ]o)\b", "", service, flags=re.IGNORECASE)
     service = re.sub(r"\s+", " ", service).strip(" .,")
+    service = re.sub(r"\b(de|del|a|al)\b\s*$", "", service, flags=re.IGNORECASE).strip(" .,")
     return service[:128] if service else None
 
 

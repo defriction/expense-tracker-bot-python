@@ -20,11 +20,11 @@ HELP_MESSAGE = (
     "<b>Recurrentes</b>\n"
     "• <code>Netflix 39900 mensual</code>\n"
     "• <code>Recuérdame pagar todos los 5 el internet</code>\n"
-    "• <code>/recurrings</code> (ver IDs)\n"
-    "• <code>para ID 12 avísame 3 días antes y el mismo día</code>\n"
-    "• <code>monto 12 45000</code>\n"
+    "• <code>/recurrings</code> (ver códigos)\n"
+    "• <code>para código 12 avísame 3 días antes y el mismo día</code>\n"
+    "• <code>monto código 12 45000</code>\n"
     "• <code>pausa netflix</code> / <code>sube luz a 70k</code> (lenguaje natural)\n"
-    "• <code>pausar 12</code> / <code>activar 12</code> / <code>cancelar 12</code>\n\n"
+    "• <code>pausar código 12</code> / <code>activar código 12</code> / <code>cancelar código 12</code>\n\n"
     "<b>Múltiples movimientos</b>\n"
     "• <code>me gasté 5k en comida y 60k en ropa</code>\n"
     "• Si hay ambigüedad, te pediré confirmar con <code>sí</code> o <code>no</code>\n\n"
@@ -35,7 +35,7 @@ HELP_MESSAGE = (
     "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
     "• <code>/clear</code> eliminar todas (con confirmación)\n"
-    "• <code>/clear_recurrings</code> cancelar recurrentes (con confirmación)\n"
+    "• <code>/clear_recurrings</code> eliminar recurrentes de tu lista (con confirmación)\n"
     "• <code>/start TU-TOKEN</code> activar cuenta\n\n"
     "<b>Notas</b>\n"
     "• Moneda por defecto: COP\n"
@@ -208,14 +208,15 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
 
 
 def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
-    if not items:
+    visible_items = [item for item in items if str(item.get("status") or "").lower() != "canceled"]
+    if not visible_items:
         return "📭 <b>Sin recurrentes</b>\nNo tienes recordatorios recurrentes."
 
     message = [
         "🔁 <b>Recurrentes</b>",
         "",
     ]
-    for item in items:
+    for item in visible_items:
         rid = item.get("id")
         amount_value = float(item.get("amount", 0))
         amount = "Por definir" if amount_value <= 0 else format_currency(amount_value, str(item.get("currency", "COP")))
@@ -243,16 +244,18 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
             reminder_hour_label = f"{int(reminder_hour):02d}:00"
         except (TypeError, ValueError):
             reminder_hour_label = "09:00"
-        message.append(f"<b>ID:</b> <code>{rid}</code> · <b>{amount}</b>")
-        message.append(f"{merchant} · {escape_html(recurrence)} · <b>{escape_html(status)}</b>")
+        message.append(f"🔹 <b>{merchant}</b> (Código <code>{rid}</code>)")
+        message.append(f"<b>Monto:</b> {amount}")
+        message.append(f"<b>Frecuencia:</b> {escape_html(recurrence)}")
+        message.append(f"<b>Estado:</b> <b>{escape_html(status)}</b>")
         message.append(f"<b>Próximo cobro:</b> <code>{next_due}</code>")
         message.append(f"<b>Hora recordatorio:</b> <code>{escape_html(reminder_hour_label)}</code>")
         message.append("")
 
     message.append("Opciones para actualizar:")
     message.append("• En lenguaje natural: <code>sube internet a 70k y avísame a las 6 pm</code>")
-    message.append("• Recordatorios: <code>para ID 2 avísame 3 días antes y el mismo día</code>")
-    message.append("• Estado: <code>pausa netflix</code>, <code>activar ID 3</code> o <code>cancelar spotify</code>")
+    message.append("• Recordatorios: <code>para código 2 avísame 3 días antes y el mismo día</code>")
+    message.append("• Estado: <code>pausa netflix</code>, <code>activar código 3</code> o <code>cancelar spotify</code>")
     message.append("• Limpiar todos: <code>/clear_recurrings</code>")
     return "\n".join(message).strip()
 
