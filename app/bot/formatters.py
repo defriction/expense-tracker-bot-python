@@ -21,7 +21,7 @@ HELP_MESSAGE = (
     "• <code>Netflix 39900 mensual</code>\n"
     "• <code>Recuérdame pagar todos los 5 el internet</code>\n"
     "• <code>/recurrings</code> (ver IDs)\n"
-    "• <code>recordatorios 12 3,1,0</code>\n"
+    "• <code>para ID 12 avísame 3 días antes y el mismo día</code>\n"
     "• <code>monto 12 45000</code>\n"
     "• <code>pausa netflix</code> / <code>sube luz a 70k</code> (lenguaje natural)\n"
     "• <code>pausar 12</code> / <code>activar 12</code> / <code>cancelar 12</code>\n\n"
@@ -250,9 +250,9 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
         message.append("")
 
     message.append("Opciones para actualizar:")
-    message.append("• Lenguaje natural con ID: <code>ID 2 cambiar a 56000 y recordar a las 18:30</code>")
-    message.append("• Comandos directos: <code>monto ID 45000</code> / <code>recordatorios ID 3,1,0</code>")
-    message.append("• Estado: <code>pausar ID</code> / <code>activar ID</code> / <code>cancelar ID</code>")
+    message.append("• En lenguaje natural: <code>sube internet a 70k y avísame a las 6 pm</code>")
+    message.append("• Recordatorios: <code>para ID 2 avísame 3 días antes y el mismo día</code>")
+    message.append("• Estado: <code>pausa netflix</code>, <code>activar ID 3</code> o <code>cancelar spotify</code>")
     message.append("• Limpiar todos: <code>/clear_recurrings</code>")
     return "\n".join(message).strip()
 

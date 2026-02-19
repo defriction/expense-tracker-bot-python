@@ -43,10 +43,12 @@ from app.bot.recurring_flow import (
     is_affirmative,
     is_negative,
     parse_amount,
+    parse_amount_in_context,
     parse_recurrence,
     parse_reminder_hour,
     parse_remind_offsets,
     parse_service_name,
+    parse_weekday,
 )
 from app.core.config import Settings
 from app.core.logging import logger
@@ -62,6 +64,7 @@ PENDING_MULTI_TX_CONFIRM = "multi_tx_confirm"
 PENDING_CLEAR_ALL_CONFIRM = "clear_all_confirm"
 PENDING_CLEAR_RECURRINGS_CONFIRM = "clear_recurrings_confirm"
 PENDING_DAILY_NUDGE_SET_HOUR = "daily_nudge_set_hour"
+PENDING_RECURRING_CANCEL_CONFIRM = "recurring_cancel_confirm"
 DAILY_NUDGE_PREFS_ACTION = "daily_nudge_prefs"
 PENDING_ACTION_TTL_MINUTES = 20
 PENDING_EXPIRED_MESSAGE = (
@@ -715,6 +718,10 @@ class BotPipeline(PipelineBase):
                 lambda p: self._handle_clear_recurrings_confirm(user, command.text, p),
             ),
             (
+                PENDING_RECURRING_CANCEL_CONFIRM,
+                lambda p: self._handle_recurring_cancel_confirm(user, command.text, p),
+            ),
+            (
                 PENDING_DAILY_NUDGE_SET_HOUR,
                 lambda p: self._handle_daily_nudge_set_hour(user, command.text, p),
             ),
@@ -785,7 +792,7 @@ class BotPipeline(PipelineBase):
                 "ℹ️ Este gasto ya tiene un recordatorio recurrente activo.\n"
                 f"ID: <code>{recurring_id}</code>\n\n"
                 "Comandos disponibles:\n"
-                f"• <code>recordatorios {recurring_id} 3,1,0</code>\n"
+                f"• <code>recordatorios {recurring_id} 3 días antes y el mismo día</code>\n"
                 f"• <code>monto {recurring_id} 45000</code>\n"
                 f"• <code>pausar {recurring_id}</code> / <code>activar {recurring_id}</code> / <code>cancelar {recurring_id}</code>\n"
                 "• <code>/recurrings</code> para ver todo"
@@ -1224,13 +1231,13 @@ class BotPipeline(PipelineBase):
                 offsets_text = ",".join([str(v) for v in offsets])
                 return self._handle_recurring_edit(user, f"recordatorios {recurring_id} {offsets_text}")
 
-        if parse_amount(raw) is not None and re.search(r"\b(monto|valor|sube|subir|baja|bajar|ajusta|ajustar|cambia|cambiar|actualiza|actualizar)\b", norm):
+        if parse_amount_in_context(raw) is not None and re.search(r"\b(monto|valor|sube|subir|baja|bajar|ajusta|ajustar|cambia|cambiar|actualiza|actualizar)\b", norm):
             if not (has_explicit_id or has_target_match or has_recurring_hint):
                 return None
             recurring_id, err = self._resolve_recurring_target(user, raw)
             if err:
                 return err
-            amount = parse_amount(raw)
+            amount = parse_amount_in_context(raw)
             if amount is None:
                 return self._make_message("⚠️ <b>Monto inválido</b>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
             return self._handle_recurring_update_amount(user, f"monto {recurring_id} {self._format_amount_for_command(amount)}")
@@ -1331,17 +1338,23 @@ class BotPipeline(PipelineBase):
         content = text or ""
         recurrence = parse_recurrence(content)
         service_name = parse_service_name(content) or "Pago recurrente"
-        billing_day = None
-        if recurrence in {"monthly", "quarterly", "yearly"}:
-            billing_day = self._parse_billing_day_from_text(content)
+        billing_day = self._parse_billing_day_from_text(content) if recurrence in {"monthly", "quarterly", "yearly"} else None
+        billing_weekday = parse_weekday(content) if recurrence in {"weekly", "biweekly"} else None
         reminder_hour = parse_reminder_hour(content)
         offsets = [3, 1, 0]
-        if re.search(r"\d+\s*,\s*\d+", content):
+        if re.search(r"\b(recordatorio|recordatorios|av[ií]same|avisa|avisar|d[ií]as?\s+antes|mismo\s+d[ií]a|d[ií]a\s+del\s+cobro)\b", content.lower()):
             parsed_offsets = parse_remind_offsets(content)
             if parsed_offsets:
                 offsets = parsed_offsets
         recurrence_id = f"REC:{service_name.upper().replace(' ', '_')[:40]}"
-        amount = parse_amount(content) or 0
+        parsed_amount = parse_amount_in_context(content)
+        amount = parsed_amount if parsed_amount is not None else 0
+        link_match = re.search(r"(https?://[^\s]+|www\.[^\s]+)", content, flags=re.IGNORECASE)
+        payment_link = link_match.group(1)[:500] if link_match else ""
+        payment_reference = ""
+        ref_match = re.search(r"\b(?:ref(?:erencia)?|convenio|cuenta)\s*[:#-]?\s*([A-Za-z0-9\-_.]{4,64})\b", content, flags=re.IGNORECASE)
+        if ref_match:
+            payment_reference = ref_match.group(1)[:500]
         today = get_today(self.settings)
         existing = self._get_repo().find_recurring_by_recurrence_id(str(user.get("userId")), recurrence_id)
         if existing:
@@ -1351,10 +1364,13 @@ class BotPipeline(PipelineBase):
                 {
                     "service_name": service_name,
                     "recurrence": recurrence,
-                    "billing_day": billing_day,
-                    "amount": amount,
+                    "billing_day": billing_day if billing_day is not None else existing.get("billing_day"),
+                    "billing_weekday": billing_weekday if billing_weekday is not None else existing.get("billing_weekday"),
+                    "amount": amount if parsed_amount is not None else (existing.get("amount") or 0),
                     "reminder_hour": reminder_hour if reminder_hour is not None else (existing.get("reminder_hour") or 9),
                     "remind_offsets": offsets,
+                    "payment_link": payment_link or (existing.get("payment_link") or ""),
+                    "payment_reference": payment_reference or (existing.get("payment_reference") or ""),
                     "status": "pending",
                 },
             )
@@ -1371,22 +1387,35 @@ class BotPipeline(PipelineBase):
                     "currency": "COP",
                     "recurrence": recurrence,
                     "billing_day": billing_day,
+                    "billing_weekday": billing_weekday,
                     "billing_month": today.month,
                     "anchor_date": today.isoformat(),
                     "timezone": self.settings.timezone or "America/Bogota",
                     "remind_offsets": offsets,
                     "reminder_hour": reminder_hour if reminder_hour is not None else 9,
+                    "payment_link": payment_link,
+                    "payment_reference": payment_reference,
                     "status": "pending",
                     "source_tx_id": None,
                 }
             )
 
-        if billing_day is not None and reminder_hour is not None:
+        recurring = self._get_repo().get_recurring_expense(int(recurring["id"])) or recurring
+        effective_billing_day = recurring.get("billing_day")
+        effective_billing_weekday = recurring.get("billing_weekday")
+
+        has_schedule = False
+        if recurrence in {"weekly", "biweekly"}:
+            has_schedule = effective_billing_weekday is not None
+        else:
+            has_schedule = effective_billing_day is not None
+
+        if has_schedule:
             next_due = compute_next_due(
                 recurrence,
                 today,
-                billing_day,
-                None,
+                effective_billing_day,
+                effective_billing_weekday,
                 recurring.get("billing_month"),
                 self._parse_iso_date(str(recurring.get("anchor_date") or "")),
             )
@@ -1398,7 +1427,7 @@ class BotPipeline(PipelineBase):
             if refreshed:
                 return self._make_message(build_setup_summary(refreshed, self.settings), _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
             return self._make_message("✅ Recurrente activado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
-        step = "ask_reminders" if billing_day else "ask_billing_day"
+        step = "ask_billing_day"
         pending_state = {
             "recurring_id": recurring["id"],
             "step": step,
@@ -1450,12 +1479,15 @@ class BotPipeline(PipelineBase):
                 state = {}
         step = state.get("step") or "ask_billing_day"
         recurrence = state.get("recurrence") or "monthly"
-        recurring_id = int(state.get("recurring_id") or 0)
+        try:
+            recurring_id = int(state.get("recurring_id") or 0)
+        except (TypeError, ValueError):
+            recurring_id = 0
         result = handle_setup_step(step, text or "", recurrence)
         if result.response:
             follow = build_setup_question(step, recurrence)
             keyboard = _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
-            if step in {"ask_payment_link", "ask_payment_reference"}:
+            if step in {"ask_reminder_hour"}:
                 keyboard = _kb([ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP])
             return self._make_message(f"{result.response}\n\n{follow}", keyboard)
 
@@ -1488,7 +1520,7 @@ class BotPipeline(PipelineBase):
         state["step"] = next_step
         self._upsert_pending_action(str(user.get("userId")), PENDING_RECURRING_ACTION, state)
         keyboard = _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP])
-        if next_step in {"ask_payment_link", "ask_payment_reference"}:
+        if next_step in {"ask_reminder_hour"}:
             keyboard = _kb([ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP])
         return self._make_message(build_setup_question(next_step, recurrence), keyboard)
 
@@ -1512,7 +1544,10 @@ class BotPipeline(PipelineBase):
             offsets_text = content
         else:
             if len(parts) < 2:
-                return self._make_message("ℹ️ Uso: <code>recordatorios ID 3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+                return self._make_message(
+                    "ℹ️ Dime el ID y cuándo avisarte.\nEjemplo: <code>recordatorios 12 tres días antes y el mismo día</code>.",
+                    _kb([ACTION_RECURRINGS, ACTION_HELP]),
+                )
             try:
                 recurring_id = int(parts[1])
             except ValueError:
@@ -1527,7 +1562,10 @@ class BotPipeline(PipelineBase):
                     "recurring_edit_reminders",
                     {"recurring_id": recurring_id},
                 )
-            return self._make_message("ℹ️ Envía los recordatorios. Ej: <code>3,1,0</code>", _kb([ACTION_RECURRINGS, ACTION_HELP]))
+            return self._make_message(
+                "ℹ️ No te entendí cuándo avisar.\nPuedes escribir: <code>3 días antes y el mismo día</code>.",
+                _kb([ACTION_RECURRINGS, ACTION_HELP]),
+            )
 
         recurring = self._get_repo().get_recurring_expense(int(recurring_id))
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
@@ -1602,8 +1640,48 @@ class BotPipeline(PipelineBase):
         recurring = self._get_repo().get_recurring_expense(recurring_id)
         if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
             return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+        service_name = str(recurring.get("service_name") or recurring.get("normalized_merchant") or recurring.get("description") or f"ID {recurring_id}")
+        self._upsert_pending_action(
+            str(user.get("userId")),
+            PENDING_RECURRING_CANCEL_CONFIRM,
+            {"recurring_id": recurring_id},
+        )
+        return self._make_message(
+            "⚠️ Vas a cancelar este recurrente:\n"
+            f"<b>{service_name}</b> (ID <code>{recurring_id}</code>)\n\n"
+            "Responde <code>sí</code> para confirmar o <code>no</code> para mantenerlo activo.",
+            _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP]),
+        )
+
+    def _handle_recurring_cancel_confirm(self, user: Dict[str, Any], text: str, pending: Dict[str, Any]) -> BotMessage:
+        answer = (text or "").strip()
+        if is_negative(answer):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message("✅ Entendido. No cancelé ese recurrente.", _kb_main())
+        if not is_affirmative(answer):
+            return self._make_message(
+                "Responde <code>sí</code> para cancelar o <code>no</code> para conservarlo.",
+                _kb([ACTION_CONFIRM_YES, ACTION_CONFIRM_NO], [ACTION_RECURRINGS, ACTION_HELP]),
+            )
+
+        state = pending.get("state") or {}
+        if isinstance(state, str):
+            try:
+                state = __import__("json").loads(state)
+            except Exception:
+                state = {}
+        try:
+            recurring_id = int(state.get("recurring_id") or 0)
+        except (TypeError, ValueError):
+            recurring_id = 0
+        recurring = self._get_repo().get_recurring_expense(recurring_id)
+        if not recurring or str(recurring.get("user_id")) != str(user.get("userId")):
+            self._get_repo().delete_pending_action(int(pending["id"]))
+            return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
+
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         self._get_repo().update_recurring_expense(recurring_id, {"status": "canceled", "canceled_at": now})
+        self._get_repo().delete_pending_action(int(pending["id"]))
         return self._make_message("🛑 Recurrente cancelado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_daily_nudge_set_hour(self, user: Dict[str, Any], text: str, pending: Dict[str, Any]) -> BotMessage:
@@ -1639,6 +1717,18 @@ class BotPipeline(PipelineBase):
             return self._make_message(
                 "🔕 Recordatorio diario silenciado.\nSi quieres reactivarlo, pulsa el botón.",
                 _kb([BotAction("dailynudge:enable", "🔔 Activar recordatorio")], [ACTION_HELP]),
+            )
+
+        if action == "examples":
+            return self._make_message(
+                "✍️ <b>Ejemplos rápidos</b>\n"
+                "• <code>almuerzo 18000</code>\n"
+                "• <code>uber 12500</code>\n"
+                "• <code>supermercado 85k</code>\n"
+                "• <code>me pagaron 2m</code>\n\n"
+                "También puedes enviar varios en un mensaje:\n"
+                "<code>almuerzo 18k y taxi 12k</code>",
+                _kb([ACTION_LIST, ACTION_SUMMARY], [ACTION_HELP, BotAction("dailynudge:set_hour", "🕖 Cambiar hora")]),
             )
 
         if action == "enable":

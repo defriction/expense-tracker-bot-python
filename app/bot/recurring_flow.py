@@ -131,6 +131,23 @@ def parse_amount(text: str) -> Optional[float]:
         return None
 
 
+def parse_amount_in_context(text: str) -> Optional[float]:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    norm = raw.lower()
+    if re.search(r"(\$|cop|peso|pesos|\bk\b|\bm\b|luka|luca|palo|palos)", norm):
+        return parse_amount(raw)
+    if not re.search(r"\b(monto|valor|cuesta|cobro|cobran|pago de|pagar|pago|total|por)\b", norm):
+        return None
+    amount = parse_amount(raw)
+    if amount is None:
+        return None
+    if amount < 1000 and not re.search(r"(\$|cop|peso|pesos|mil)", norm):
+        return None
+    return amount
+
+
 def parse_recurrence(text: str) -> str:
     t = _normalize_text(text)
     if re.search(r"\b(quincenal|cada\s+15\s+d[ií]as)\b", t):
@@ -278,16 +295,12 @@ def compute_next_due(
 def build_setup_question(step: str, recurrence: str) -> str:
     if step == "ask_billing_day":
         if recurrence in {"weekly", "biweekly"}:
-            return "¿Qué día de la semana se cobra? Ej: <code>lunes</code>."
+            return "¿Qué día de la semana se cobra? Puedes escribir por ejemplo <code>lunes</code>."
         return "¿Qué día del mes se cobra? Escribe un número de <code>1</code> a <code>31</code>."
     if step == "ask_reminders":
-        return "¿Cuándo quieres los recordatorios? Ej: <code>3,1,0</code> (3 días antes, 1 día antes y el día del cobro)."
+        return "¿Cuándo quieres los recordatorios? Puedes decirlo natural: <code>3 días antes y el mismo día</code>."
     if step == "ask_reminder_hour":
-        return "¿A qué hora te recordamos? Ej: <code>08:00</code> o <code>20</code> (formato 24 horas)."
-    if step == "ask_payment_link":
-        return "¿Tienes enlace de pago? Envíalo o escribe <code>no</code>."
-    if step == "ask_payment_reference":
-        return "¿Tienes referencia de pago? Envíala o escribe <code>no</code>."
+        return "¿A qué hora te recordamos? Puedes escribir <code>8 am</code>, <code>20</code> o <code>20:30</code>."
     return ""
 
 
@@ -364,11 +377,11 @@ def handle_setup_step(step: str, text: str, recurrence: str) -> SetupResult:
             weekday = parse_weekday(text)
             if weekday is None:
                 return SetupResult("⚠️ No entendí el día. Prueba con: <code>lunes</code>, <code>martes</code> o <code>miércoles</code>.")
-            return SetupResult("", updates={"billing_weekday": weekday}, next_step="ask_reminders")
+            return SetupResult("", updates={"billing_weekday": weekday}, done=True)
         day = parse_billing_day(text)
         if day is None:
             return SetupResult("⚠️ No entendí el día. Escribe un número entre <code>1</code> y <code>31</code>.")
-        return SetupResult("", updates={"billing_day": day}, next_step="ask_reminders")
+        return SetupResult("", updates={"billing_day": day}, done=True)
 
     if step == "ask_reminders":
         offsets = parse_remind_offsets(text)
@@ -380,18 +393,7 @@ def handle_setup_step(step: str, text: str, recurrence: str) -> SetupResult:
         hour = parse_reminder_hour(text)
         if hour is None:
             return SetupResult("⚠️ No entendí la hora. Usa formato 24 horas, por ejemplo: <code>08:00</code> o <code>20</code>.")
-        return SetupResult("", updates={"reminder_hour": hour}, next_step="ask_payment_link")
-
-    if step == "ask_payment_link":
-        if is_negative(text):
-            return SetupResult("", updates={"payment_link": ""}, next_step="ask_payment_reference")
-        link = _extract_link(text) or text.strip()
-        return SetupResult("", updates={"payment_link": link[:500]}, next_step="ask_payment_reference")
-
-    if step == "ask_payment_reference":
-        if is_negative(text):
-            return SetupResult("", updates={"payment_reference": ""}, next_step=None, done=True)
-        return SetupResult("", updates={"payment_reference": text.strip()[:500]}, next_step=None, done=True)
+        return SetupResult("", updates={"reminder_hour": hour}, done=True)
 
     return SetupResult("⚠️ No entendí el mensaje. Intenta de nuevo.")
 

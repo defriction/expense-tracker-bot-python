@@ -40,13 +40,22 @@ def _parse_reminder_hour(value: Any, default: int = 9) -> int:
     return default
 
 
-def _build_keyboard(actions: Iterable[tuple[str, str]]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=label, callback_data=action_id) for action_id, label in actions]]
+def _action_rows(actions: Iterable[tuple[str, str]], row_size: int = 3) -> list[list[tuple[str, str]]]:
+    data = list(actions)
+    size = max(1, int(row_size))
+    return [data[i : i + size] for i in range(0, len(data), size)]
+
+
+def _build_keyboard(actions: Iterable[tuple[str, str]], row_size: int = 3) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=action_id) for action_id, label in row]
+        for row in _action_rows(actions, row_size=row_size)
+    ]
     return InlineKeyboardMarkup(rows)
 
 
-def _build_bot_message(text: str, actions: Iterable[tuple[str, str]]) -> BotMessage:
-    rows = [[BotAction(action_id, label) for action_id, label in actions]]
+def _build_bot_message(text: str, actions: Iterable[tuple[str, str]], row_size: int = 3) -> BotMessage:
+    rows = [[BotAction(action_id, label) for action_id, label in row] for row in _action_rows(actions, row_size=row_size)]
     return BotMessage(text=text, keyboard=BotKeyboard(rows=rows))
 
 
@@ -76,10 +85,11 @@ def _reminder_text(recurring: Dict[str, Any], due_date: date, offset: int) -> st
 
 def _daily_expense_nudge_text() -> str:
     return (
-        "🧾 <b>Cierre del día</b>\n"
-        "Hoy aún no veo gastos registrados.\n\n"
-        "Si tuviste alguno, este es buen momento para dejarlo guardado y mantener tu control al día.\n"
-        "Ejemplo: <code>almuerzo 18000</code>"
+        "🧾 <b>Recordatorio diario</b>\n"
+        "Hoy no veo movimientos registrados.\n\n"
+        "Si ya gastaste algo, escríbelo en lenguaje natural.\n"
+        "Ejemplo: <code>almuerzo 18000</code>\n\n"
+        "También puedes usar el menú para ver ejemplos, ayuda o tu resumen."
     )
 
 
@@ -155,6 +165,8 @@ async def _process_daily_expense_nudges(
     today = _today_for_timezone(scheduler_tz)
     prompt_text = _daily_expense_nudge_text()
     actions = [
+        ("dailynudge:examples", "✍️ Ejemplos"),
+        ("/help", "ℹ️ Ayuda"),
         ("/list", "🧾 Ver movimientos"),
         ("/summary", "📊 Resumen"),
         ("dailynudge:set_hour", "🕖 Cambiar hora"),
@@ -196,7 +208,7 @@ async def _process_daily_expense_nudges(
                         text=prompt_text,
                         parse_mode="HTML",
                         disable_web_page_preview=True,
-                        reply_markup=_build_keyboard(actions),
+                        reply_markup=_build_keyboard(actions, row_size=2),
                     )
                     delivered = True
                 except Exception as exc:
@@ -208,7 +220,7 @@ async def _process_daily_expense_nudges(
                     await send_evolution_message(
                         evolution_client,
                         str(evolution_chat),
-                        _build_bot_message(prompt_text, actions),
+                        _build_bot_message(prompt_text, actions, row_size=2),
                     )
                     delivered = True
                 except Exception as exc:
