@@ -951,6 +951,8 @@ class BotPipeline(PipelineBase):
 
     def _find_recurring_by_text(self, user_id: str, text: str) -> list[Dict[str, Any]]:
         items = self._get_repo().list_recurring_expenses(user_id)
+        # Ignore canceled items so natural updates don't target deleted records from history.
+        items = [item for item in items if str(item.get("status") or "").lower() != "canceled"]
         norm_text = self._norm_match(text)
         scored: list[tuple[int, Dict[str, Any]]] = []
         for item in items:
