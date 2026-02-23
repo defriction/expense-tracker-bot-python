@@ -153,7 +153,18 @@ Cuando haya baja confianza, pedirá confirmación con `sí` o `no` antes de guar
 
 El workflow `.github/workflows/deploy.yml` despliega por rama:
 
-- `main`/`master`: producción
-- `develop`: desarrollo
+- En `main` usa nombres base (sin sufijo):
+  `APP_DIR=/root/apps/automations/expense-tracker-bot`,
+  `IMAGE_NAME=expense-tracker-bot:latest`,
+  `CONTAINER_NAME=expense-tracker-bot`,
+  `COMPOSE_PROJECT_NAME=expense-bot`.
+- En ramas no `main` usa sufijo por branch:
+  `APP_DIR=/root/apps/automations/expense-tracker-bot-<branch>`,
+  `IMAGE_NAME=expense-tracker-bot:<branch>`,
+  `CONTAINER_NAME=expense-tracker-bot-<branch>`,
+  `COMPOSE_PROJECT_NAME=expense-bot-<branch>`.
 
-Hace copia al VPS y levanta con Docker Compose.
+Notas:
+
+- `main` mantiene `TRAEFIK_PATH_PREFIX=/expense/v1`.
+- Las demás ramas usan `TRAEFIK_PATH_PREFIX=/expense-<branch>/v1`.
