@@ -2,10 +2,10 @@ name: Deploy Tennis Bot
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, dev ]
 
 env:
-  DEPLOY_ENV: ${{ github.ref_name == 'develop' && 'dev' || 'prod' }}
+  DEPLOY_ENV: ${{ github.ref_name == 'dev' && 'dev' || 'prod' }}
   APP_DIR: ${{ github.ref_name == 'main' && '/root/apps/automations/expense-tracker-bot' || format('/root/apps/automations/expense-tracker-bot-{0}', github.ref_name) }}
   TRAEFIK_PATH_PREFIX: ${{ github.ref_name == 'main' && '/expense/v1' || format('/expense-{0}/v1', github.ref_name) }}
   IMAGE_NAME: ${{ github.ref_name == 'main' && 'expense-tracker-bot:latest' || format('expense-tracker-bot:{0}', github.ref_name) }}
@@ -13,7 +13,7 @@ env:
   TRAEFIK_ROUTER_NAME: ${{ github.ref_name == 'main' && 'expense-bot' || format('expense-bot-{0}', github.ref_name) }}
   TRAEFIK_MIDDLEWARE_NAME: ${{ github.ref_name == 'main' && 'expense-strip' || format('expense-strip-{0}', github.ref_name) }}
   COMPOSE_PROJECT_NAME: ${{ github.ref_name == 'main' && 'expense-bot' || format('expense-bot-{0}', github.ref_name) }}
-  COMPOSE_FILE: ${{ github.ref_name == 'develop' && 'docker-compose.dev.yml' || 'docker-compose.yml' }}
+  COMPOSE_FILE: ${{ github.ref_name == 'dev' && 'docker-compose.dev.yml' || 'docker-compose.yml' }}
 
 jobs:
   deploy:
@@ -44,7 +44,7 @@ jobs:
           mkdir -p ${{ env.APP_DIR }}
           cd ${{ env.APP_DIR }}
 
-          if [ "${{ github.ref_name }}" = "develop" ]; then
+          if [ "${{ github.ref_name }}" = "dev" ]; then
             echo "${{ secrets.ENV_FILE_EXPENSE_DEV }}" > .env
           else
             echo "${{ secrets.ENV_FILE_EXPENSE }}" > .env
