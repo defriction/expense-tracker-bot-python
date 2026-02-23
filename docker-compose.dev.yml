@@ -12,6 +12,10 @@ services:
       - proxy
       - internal
     labels:
+      - type=app
+      - subtype=bot
+      - app=expense-tracker
+      - env=${DEPLOY_ENV:-dev}
       - traefik.enable=true
       - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.rule=Host(`n8n.srv1153123.hstgr.cloud`) && PathPrefix(`${TRAEFIK_PATH_PREFIX:-/expense-dev/v1}`)
       - traefik.http.routers.${TRAEFIK_ROUTER_NAME:-expense-bot-dev}.entrypoints=websecure
