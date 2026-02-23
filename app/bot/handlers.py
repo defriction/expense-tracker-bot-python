@@ -11,7 +11,7 @@ from app.bot.parser import parse_command
 from app.bot.ui_models import BotInput
 from app.channels.telegram_adapter import download_voice_bytes, send_bot_message
 from app.core.config import Settings, load_settings
-from app.core.logging import get_client_ip, get_trace_id, logger, set_log_context, setup_logging, set_trace_id
+from app.core.logging import get_client_ip, logger, setup_logging, set_trace_id
 from app.core.rate_limit import rate_limiter
 from app.services.groq import GroqClient
 from app.services.data_repo import build_data_repo
@@ -77,21 +77,8 @@ def _get_pipeline() -> BotPipeline:
 
 
 def _set_trace_from_update(update) -> None:
-    if get_trace_id() != "-":
-        return
     trace = None
-    message_id = None
-    chat_id = None
-    if update is not None and getattr(update, "effective_message", None):
-        message = update.effective_message
-        message_id = getattr(message, "message_id", None)
-        chat_id = getattr(message, "chat_id", None)
-        if message_id is not None:
-            if chat_id is not None:
-                trace = f"tg-{chat_id}-{message_id}"
-            else:
-                trace = f"tg-{message_id}"
-    if trace is None and update is not None and hasattr(update, "update_id"):
+    if update is not None and hasattr(update, "update_id"):
         trace = f"tg-{update.update_id}"
     set_trace_id(trace)
 
@@ -115,8 +102,6 @@ async def _handle_message_safe(update, context) -> None:
         if not text and message:
             text = message.caption
         message_id = str(message.message_id) if message else None
-        set_log_context("telegram", chat_id, telegram_user_id, message_id)
-        logger.debug("Handler message start channel=telegram")
         audio_bytes = None
         non_text_type = None
 
@@ -163,10 +148,8 @@ async def _handle_message_safe(update, context) -> None:
                 return
 
         responses = await pipeline.handle_message(request)
-        logger.debug("Handler message responses channel=telegram count=%s", len(responses))
         for response in responses:
             await send_bot_message(context, chat_id, response)
-        logger.debug("Handler message done channel=telegram")
     except Exception as exc:
         await _notify_error(update, context, exc)
 
@@ -185,8 +168,6 @@ async def _handle_callback_safe(update, context) -> None:
         telegram_user_id = callback.from_user.id if callback.from_user else None
         message_id = str(message.message_id) if message else None
         text = callback.data
-        set_log_context("telegram", chat_id, telegram_user_id, message_id)
-        logger.debug("Handler callback start channel=telegram")
 
         request = BotInput(
             channel="telegram",
@@ -217,10 +198,8 @@ async def _handle_callback_safe(update, context) -> None:
                 await send_bot_message(context, chat_id, pipeline._make_message(RATE_LIMIT_MESSAGE))
                 return
         responses = await pipeline.handle_callback(request)
-        logger.debug("Handler callback responses channel=telegram count=%s", len(responses))
         for response in responses:
             await send_bot_message(context, chat_id, response)
-        logger.debug("Handler callback done channel=telegram")
     except Exception as exc:
         await _notify_error(update, context, exc)
 
@@ -229,8 +208,6 @@ async def _notify_error(update, context, exc: Exception) -> None:
     message = str(exc) or "Unknown error"
     chat_id = update.effective_chat.id if update and update.effective_chat else None
     user_id = update.effective_user.id if update and update.effective_user else None
-    message_id = update.effective_message.message_id if update and update.effective_message else None
-    set_log_context("telegram", chat_id, user_id, message_id)
     logger.exception("Unhandled error chat_id=%s user_id=%s error=%s", chat_id, user_id, message)
     try:
         pipeline = _get_pipeline()

@@ -1,33 +1,28 @@
 ﻿from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Optional
 
 
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
     groq_api_key: Optional[str]
-    google_sheets_id: str
-    google_service_account_json: Optional[str]
-    google_service_account_file: Optional[str]
     admin_telegram_chat_id: Optional[str]
+    invite_admin_api_key: Optional[str]
     database_url: Optional[str]
     telegram_webhook_secret: Optional[str]
     evolution_api_url: Optional[str] = None
     evolution_api_key: Optional[str] = None
     evolution_instance_name: Optional[str] = None
+    db_schema: Optional[str] = None
     max_input_chars: int = 1200
     max_output_tokens: int = 400
     rate_limit_per_user_per_min: int = 60
     rate_limit_per_ip_per_min: int = 120
     rate_limit_onboarding_per_min: int = 10
     timezone: str = "America/Bogota"
-
-
-DEFAULT_SHEETS_ID = "1IuxBa1o0LyvgoHjpYavcYCx3JSympYQ7gElXLQP8PPI"
 
 
 def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -56,31 +51,17 @@ def load_settings() -> Settings:
     return Settings(
         bot_token=bot_token,
         groq_api_key=_get_env("GROQ_API_KEY"),
-        google_sheets_id=_get_env("GOOGLE_SHEETS_ID", DEFAULT_SHEETS_ID) or DEFAULT_SHEETS_ID,
-        google_service_account_json=_get_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
-        google_service_account_file=_get_env("GOOGLE_SERVICE_ACCOUNT_FILE"),
         admin_telegram_chat_id=_get_env("ADMIN_TELEGRAM_CHAT_ID"),
+        invite_admin_api_key=_get_env("INVITE_ADMIN_API_KEY"),
         database_url=_get_env("DATABASE_URL"),
         telegram_webhook_secret=_get_env("TELEGRAM_WEBHOOK_SECRET"),
         evolution_api_url=_get_env("EVOLUTION_API_URL"),
         evolution_api_key=_get_env("EVOLUTION_API_KEY"),
         evolution_instance_name=_get_env("EVOLUTION_INSTANCE_NAME"),
+        db_schema=_get_env("DB_SCHEMA"),
         max_input_chars=_get_int_env("MAX_INPUT_CHARS", 1200),
         max_output_tokens=_get_int_env("GROQ_MAX_OUTPUT_TOKENS", 400),
         rate_limit_per_user_per_min=_get_int_env("RATE_LIMIT_USER_PER_MIN", 60),
         rate_limit_per_ip_per_min=_get_int_env("RATE_LIMIT_IP_PER_MIN", 120),
         rate_limit_onboarding_per_min=_get_int_env("RATE_LIMIT_ONBOARDING_PER_MIN", 10),
-    )
-
-
-def load_service_account_info(settings: Settings) -> Dict[str, Any]:
-    if settings.google_service_account_json:
-        return json.loads(settings.google_service_account_json)
-
-    if settings.google_service_account_file:
-        with open(settings.google_service_account_file, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-
-    raise RuntimeError(
-        "Google service account credentials missing. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE."
     )

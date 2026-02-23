@@ -1,43 +1,159 @@
-# Telegram Webhook Bot (FastAPI) + Traefik
+# Expense Tracker Bot
 
-## What this is
-Telegram webhook bot (FastAPI) that mirrors the n8n Finance Bot workflow:
-onboarding with invite tokens, Google Sheets storage, AI parsing (Groq), voice
-transcription, list/summary/undo commands.
+Este proyecto es un bot para registrar gastos e ingresos.
+Funciona con FastAPI y recibe mensajes desde:
 
-## Project structure
-- `app/core`: settings + shared utilities
-- `app/services`: reusable integrations (Groq, Google Sheets, Telegram)
-- `app/routers`: reusable FastAPI routers (Telegram webhook)
-- `app/bot`: bot-specific workflow (parser, formatters, pipeline, handlers)
+- Telegram
+- WhatsApp (usando Evolution API)
 
-## Local quick run (optional)
-- Copy `.env.example` to `.env` and set:
-  - `BOT_TOKEN`
-  - `GROQ_API_KEY`
-  - `GOOGLE_SHEETS_ID`
-  - `GOOGLE_SERVICE_ACCOUNT_JSON` (inline JSON) or `GOOGLE_SERVICE_ACCOUNT_FILE`
-- `ADMIN_TELEGRAM_CHAT_ID` is optional (admin notifications).
-- `docker compose up -d --build`
+También puede:
 
-Local run without Docker:
+- Entender texto libre (con Groq)
+- Transcribir notas de voz
+- Exportar transacciones a Excel
+- Recordarte pagos recurrentes
+
+## Qué hace
+
+- Guarda gastos, ingresos, préstamos y transferencias.
+- Activa usuarios con token: `/start TU-TOKEN`.
+- Muestra lista de movimientos: `/list`.
+- Muestra resumen del mes: `/summary`.
+- Muestra recurrentes: `/recurrings` (también acepta `/recurrentes`).
+- Descarga Excel: `/download` o `/descargar`.
+- Deshace el último movimiento: `/undo`.
+- Elimina todas las transacciones (con confirmación): `/clear`.
+- Cancela todos los recurrentes (con confirmación): `/clear_recurrings`.
+
+## Rutas del webhook
+
+Internas (dentro del servicio):
+
+- `POST /webhook` (Telegram)
+- `POST /evolution/webhook` (Evolution)
+
+Con Traefik en producción:
+
+- `POST /expense/v1/webhook`
+- `POST /expense/v1/evolution/webhook`
+
+En `develop` usa `/expense-dev/v1`.
+
+## Requisitos
+
+- Python 3.11+
+- PostgreSQL
+- Token de Telegram
+
+Opcional:
+
+- Groq API key (para IA y voz)
+- Redis (rate limit compartido) 
+
+## Variables de entorno
+
+Copia `.env.example` a `.env`.
+
+Obligatorias:
+
+- `BOT_TOKEN`
+- `DATABASE_URL`
+
+Recomendadas:
+
+- `GROQ_API_KEY`
+- `TELEGRAM_WEBHOOK_SECRET`
+
+Opcionales:
+
+- `ADMIN_TELEGRAM_CHAT_ID`
+- `INVITE_ADMIN_API_KEY` (protege `GET /admin/invites`)
+- `REDIS_URL`
+- `EVOLUTION_API_URL`
+- `EVOLUTION_API_KEY`
+- `EVOLUTION_INSTANCE_NAME`
+- `DB_SCHEMA`
+- `MAX_INPUT_CHARS` (default `1200`)
+- `GROQ_MAX_OUTPUT_TOKENS` (default `400`)
+- `RATE_LIMIT_USER_PER_MIN` (default `60`)
+- `RATE_LIMIT_IP_PER_MIN` (default `120`)
+- `RATE_LIMIT_ONBOARDING_PER_MIN` (default `10`)
+
+## Crear invite
+
+Endpoint interno para emitir tokens de onboarding:
+
+- `GET /admin/invites`
+- Auth (cualquiera de las dos):
+  - Header: `X-Admin-Api-Key: <INVITE_ADMIN_API_KEY>`
+  - Query param: `api_key=<INVITE_ADMIN_API_KEY>`
+- Query param opcional: `actor_user_id` (máx. 64 chars)
+
+Ejemplo browser: `GET /admin/invites?api_key=TU_KEY&actor_user_id=USR-ADMIN-123`
+
+Respuesta:
+
+```json
+{
+  "ok": true,
+  "inviteToken": "INV-...",
+  "status": "unused",
+  "startCommand": "/start INV-..."
+}
 ```
-set PYTHONPATH=.
+
+## Cómo correrlo
+
+Con Docker:
+
+```bash
+docker compose up -d --build
+```
+
+Sin Docker:
+
+```bash
+export PYTHONPATH=.
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Production
-This project is designed to sit behind Traefik and expose:
-- https://bot.srv1153123.hstgr.cloud/webhook
+## Migraciones
 
-## Sheets schema
-This bot expects the following sheets (same as the n8n workflow):
-- `Users` (userId, telegramUserId, chatId, status, createdAt, lastSeenAt)
-- `Invites` (inviteToken, status, expiresAt, usedAt, createdAt)
-- `Transactions` (txId, userId, type, transactionKind, date, amount, currency, category, description, rawText, normalizedMerchant, paymentMethod, counterparty, loanRole, loanId, isRecurring, recurrence, recurrenceId, source, sourceMessageId, parseConfidence, parserVersion, createdAt, updatedAt, isDeleted, deletedAt)
-- `ErrorLogs` (timestamp, workflow, node, message)
+Recomendado (Alembic):
 
-## Google auth
-Create a Google service account, enable the Sheets API, and share the target
-spreadsheet with the service account email. Then set credentials via
-`GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVICE_ACCOUNT_FILE`.
+```bash
+alembic upgrade head
+```
+
+Notas:
+
+- `DATABASE_URL` es obligatorio para migrar.
+- Si usas otro esquema, define `DB_SCHEMA`.
+- También hay scripts SQL manuales en `migrations/sql/`.
+
+## Ejemplos de mensajes
+
+- `comí un pan 5k`
+- `uber 12000 ayer`
+- `salario 2500000`
+- `le presté 200k a Juan`
+- `me gasté 5k en comida y 60k en ropa y 80k en estuche`
+- `Recuérdame pagar todos los 5 el internet`
+- `recordatorios 12 3,1,0`
+- `monto 12 45000`
+- `pausar 12` / `activar 12` / `cancelar 12`
+- `pausa netflix`
+- `sube luz a 70k`
+- `/clear_recurrings`
+
+Si detecta varios montos en un solo mensaje, intentará crear múltiples transacciones.
+Cuando haya baja confianza, pedirá confirmación con `sí` o `no` antes de guardar.
+
+## Deploy automático
+
+El workflow `.github/workflows/deploy.yml` despliega por rama:
+
+- `main`/`master`: producción
+- `develop`: desarrollo
+
+Hace copia al VPS y levanta con Docker Compose.

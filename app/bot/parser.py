@@ -44,6 +44,75 @@ ALLOWED_AI_FIELDS = {
     "parseConfidence",
 }
 
+_MONEY_TOKEN_RE = re.compile(
+    r"(?<![\w/.-])(?:\$?\s*)?(\d+(?:[.,]\d+)?)(?:\s*(k|luka?s?|luca?s?|m|palo?s?|mil))?\b",
+    flags=re.IGNORECASE,
+)
+_MULTI_TX_SEPARATOR_RE = re.compile(r"(?:\s+(?:y|e|luego|despues|después)\s+|[;,])", flags=re.IGNORECASE)
+
+
+def _money_multiplier(suffix: str) -> int:
+    normalized = (suffix or "").lower()
+    if normalized in {"k", "luka", "lukas", "luca", "lucas", "mil"}:
+        return 1_000
+    if normalized in {"m", "palo", "palos"}:
+        return 1_000_000
+    return 1
+
+
+def _find_money_spans(text: str) -> list[tuple[int, int, float]]:
+    spans: list[tuple[int, int, float]] = []
+    for match in _MONEY_TOKEN_RE.finditer(text or ""):
+        raw_num = (match.group(1) or "").replace(",", ".")
+        suffix = match.group(2) or ""
+        try:
+            value = float(raw_num) * _money_multiplier(suffix)
+        except ValueError:
+            continue
+        if value <= 0:
+            continue
+        if not suffix and value < 1000:
+            nearby = ((text or "")[max(0, match.start() - 8) : min(len(text or ""), match.end() + 8)]).lower()
+            if "$" not in nearby and not re.search(r"\b(cop|peso|pesos|mil)\b", nearby):
+                continue
+        spans.append((match.start(), match.end(), value))
+    return spans
+
+
+def split_multi_transaction_text(text: str) -> list[str]:
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return []
+    spans = _find_money_spans(clean)
+    if len(spans) < 2:
+        return [clean]
+
+    def _clean_piece(piece: str) -> str:
+        out = piece.strip(" ,;:.")
+        out = re.sub(r"^\s*(y|e)\s+", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\s+(y|e)\s*$", "", out, flags=re.IGNORECASE)
+        return out.strip(" ,;:.")
+
+    segments: list[str] = []
+    for idx, (start, end, _) in enumerate(spans):
+        prev_end = 0 if idx == 0 else spans[idx - 1][1]
+        next_start = len(clean) if idx + 1 >= len(spans) else spans[idx + 1][0]
+
+        left_window = clean[prev_end:start]
+        left_matches = list(_MULTI_TX_SEPARATOR_RE.finditer(left_window))
+        segment_start = prev_end + (left_matches[-1].end() if left_matches else 0)
+
+        right_window = clean[end:next_start]
+        right_match = _MULTI_TX_SEPARATOR_RE.search(right_window)
+        segment_end = end + (right_match.start() if right_match else len(right_window))
+
+        piece = _clean_piece(clean[segment_start:segment_end])
+        if not piece:
+            continue
+        segments.append(piece)
+
+    return segments if len(segments) >= 2 else [clean]
+
 
 def normalize_amount_slang(text: str) -> str:
     t = str(text or "")
@@ -86,27 +155,58 @@ def parse_command(
 
     clean = text.strip()
     first_token = clean.split()[0].split("@")[0].lower() if clean else ""
-    normalized_token = first_token.lstrip("/")
     args = " ".join(clean.split()[1:]).strip()
 
     route = "ai"
     invite_token = ""
-    if normalized_token == "start":
+    if clean.lower().startswith("recurring:"):
+        route = "recurring_action"
+    if clean.lower().startswith("dailynudge:"):
+        route = "daily_nudge_action"
+    if first_token == "/start":
         if args:
             route = "onboarding"
             invite_token = args
         else:
             route = "help"
-    elif re.fullmatch(r"help\d*", normalized_token) or normalized_token in {"ayuda", "menu", "menú"}:
+    elif first_token == "/help":
         route = "help"
-    elif normalized_token in {"list", "movimientos"}:
+    elif first_token == "/list":
         route = "list"
-    elif normalized_token in {"summary", "resumen"}:
+    elif first_token == "/summary":
         route = "summary"
-    elif normalized_token in {"download", "descargar"}:
+    elif first_token in {"/recurrings", "/recurrentes"}:
+        route = "recurrings"
+    elif first_token in {"/download", "/descargar"}:
         route = "download"
-    elif normalized_token == "undo":
+    elif first_token == "/undo":
         route = "undo"
+    elif first_token in {"/clear", "/wipe", "/borrar_todo"}:
+        route = "clear_all"
+    elif first_token in {"/clear_recurrings", "/borrar_recurrentes"}:
+        route = "clear_recurrings"
+    else:
+        lower = clean.lower()
+        if lower.startswith("recordatorios ") or lower.startswith("reminders "):
+            route = "recurring_edit"
+        elif lower.startswith("monto ") or lower.startswith("amount "):
+            route = "recurring_update_amount"
+        elif lower.startswith("cancelar ") or lower.startswith("cancel "):
+            route = "recurring_cancel"
+        elif lower.startswith("pausar ") or lower.startswith("pausa ") or lower.startswith("pause "):
+            route = "recurring_toggle"
+        elif lower.startswith("activar ") or lower.startswith("activa ") or lower.startswith("activate "):
+            route = "recurring_toggle"
+        elif re.search(r"^(recu[eé]rdame|recordame|recuerdame)\s+pagar\b", lower):
+            route = "recurring_create"
+        elif re.search(r"^(borrar|eliminar|limpiar)\s+(todo|todas)\b", lower):
+            route = "clear_all"
+        elif re.search(r"^(borrar|eliminar|limpiar)\s+recurrentes\b", lower):
+            route = "clear_recurrings"
+        elif re.search(r"\b(borrar|eliminar|limpiar|cancelar)\b.*\b(todos?|todas?)\b.*\b(recurrentes?|suscripciones?)\b", lower):
+            route = "clear_recurrings"
+        elif re.search(r"\b(recurrentes?|suscripciones?)\b.*\b(borrar|eliminar|limpiar|cancelar)\b", lower):
+            route = "clear_recurrings"
 
     return ParsedCommand(
         route=route,
@@ -215,7 +315,7 @@ def normalize_ai_response(
         "type": _norm_str(parsed.get("type", "expense")).lower(),
         "transactionKind": _norm_str(parsed.get("transactionKind", "regular")).lower(),
         "amount": _safe_float(parsed.get("amount", 0), 0),
-        "currency": _norm_str(parsed.get("currency", "COP")).upper(),
+        "currency": "COP",
         "category": _norm_str(parsed.get("category", "misc")).lower(),
         "description": _norm_str(parsed.get("description", "")),
         "date": _norm_str(parsed.get("date", "")),
@@ -273,7 +373,7 @@ def normalize_ai_response(
         tx["loanId"] = ""
 
     if tx["isRecurring"]:
-        if tx["recurrence"] not in {"weekly", "biweekly", "monthly", "yearly"}:
+        if tx["recurrence"] not in {"weekly", "biweekly", "monthly", "quarterly", "yearly"}:
             tx["recurrence"] = "monthly"
         if not tx["recurrenceId"]:
             tx["recurrenceId"] = _stable_id("REC", tx["normalizedMerchant"] or tx["description"] or tx["category"])
@@ -315,7 +415,7 @@ def normalize_types(tx: Dict[str, Any]) -> Dict[str, Any]:
 
     tx["type"] = str(tx.get("type", "expense"))
     tx["transactionKind"] = str(tx.get("transactionKind", "regular"))
-    tx["currency"] = str(tx.get("currency", "COP"))
+    tx["currency"] = "COP"
     tx["category"] = str(tx.get("category", ""))
     tx["description"] = str(tx.get("description", ""))
 
@@ -342,7 +442,8 @@ def build_system_prompt(settings: Settings) -> str:
         "You are a financial assistant. Extract structured data from a single user message.\n\n"
         "Return JSON ONLY. No markdown, no backticks.\n\n"
         "General rules:\n"
-        "- Default currency is COP.\n"
+        "- Currency is always COP. Always output currency='COP' exactly.\n"
+        "- If user writes USD/EUR/other symbols, ignore that and keep currency='COP'.\n"
         "- paymentMethod defaults to 'cash' when unspecified.\n"
         "- Date must be YYYY-MM-DD. Use Current Date (America/Bogota) when user did not specify a date.\n"
         "- Relative time: interpret \"anoche\" as yesterday's date (America/Bogota).\n"
@@ -366,8 +467,10 @@ def build_system_prompt(settings: Settings) -> str:
         "- loanRole: 'lent' | 'borrowed' | 'repayment'.\n"
         "- loanId: stable id like 'LOAN:<COUNTERPARTY>' when possible.\n\n"
         "Recurring:\n"
-        "- isRecurring: true if periodic payment is indicated (mensual, cada mes, semanal, anual, suscripción, cada quincena).\n"
-        "- recurrence: 'weekly'|'biweekly'|'monthly'|'yearly' when isRecurring=true.\n"
+        "- isRecurring: true if periodic payment is indicated (mensual, cada mes, semanal, trimestral, anual, suscripción, cada quincena, todos los meses, cada 15 días).\n"
+        "- If periodicity is NOT explicit, set isRecurring=false.\n"
+        "- Common recurring clues: internet, luz, agua, gas, celular, arriendo, streaming, suscripciones.\n"
+        "- recurrence: 'weekly'|'biweekly'|'monthly'|'quarterly'|'yearly' when isRecurring=true.\n"
         "- recurrenceId: stable id like 'REC:<NORMALIZED_MERCHANT>'.\n\n"
         "Categories (choose ONE, avoid 'misc' unless nothing fits):\n"
         "- food_home (pan, café, snacks, mercado, supermercado, D1, Ara, Éxito)\n"

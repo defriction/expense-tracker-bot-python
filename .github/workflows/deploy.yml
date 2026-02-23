@@ -2,18 +2,27 @@ name: Deploy Tennis Bot
 
 on:
   push:
-    branches: [ main, develop ] # Asegúrate de que tu rama se llama 'main'
+    branches: [ main, master, develop ]
+
+env:
+  DEPLOY_ENV: ${{ github.ref_name == 'develop' && 'dev' || 'prod' }}
+  APP_DIR: ${{ github.ref_name == 'develop' && '/root/apps/automations/expense-tracker-bot-dev' || '/root/apps/automations/expense-tracker-bot' }}
+  TRAEFIK_PATH_PREFIX: ${{ github.ref_name == 'develop' && '/expense-dev/v1' || '/expense/v1' }}
+  IMAGE_NAME: ${{ github.ref_name == 'develop' && 'expense-tracker-bot:dev' || 'expense-tracker-bot:latest' }}
+  CONTAINER_NAME: ${{ github.ref_name == 'develop' && 'expense-tracker-bot-dev' || 'expense-tracker-bot' }}
+  TRAEFIK_ROUTER_NAME: ${{ github.ref_name == 'develop' && 'expense-bot-dev' || 'expense-bot' }}
+  TRAEFIK_MIDDLEWARE_NAME: ${{ github.ref_name == 'develop' && 'expense-strip-dev' || 'expense-strip' }}
+  COMPOSE_PROJECT_NAME: ${{ github.ref_name == 'develop' && 'expense-bot-dev' || 'expense-bot' }}
+  COMPOSE_FILE: ${{ github.ref_name == 'develop' && 'docker-compose.dev.yml' || 'docker-compose.yml' }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-    
-    # 1. Descargar el código
+
     - name: 📥 Checkout code
       uses: actions/checkout@v4
 
-    # 2. Copiar archivos al VPS (Usando la ruta específica)
     - name: 🚚 Copy files via SCP
       uses: appleboy/scp-action@master
       with:
@@ -21,10 +30,8 @@ jobs:
         username: ${{ secrets.VPS_USER }}
         key: ${{ secrets.VPS_SSH_KEY }}
         source: "."
-        # NOTA: Agregamos '/expense-tracker-bot' para que tenga su propia carpeta ordenada
-        target: "/root/apps/automations/expense-tracker-bot"
+        target: "${{ env.APP_DIR }}"
 
-    # 3. Entrar y Ejecutar Docker
     - name: 🚀 Deploy via SSH
       uses: appleboy/ssh-action@master
       with:
@@ -32,19 +39,27 @@ jobs:
         username: ${{ secrets.VPS_USER }}
         key: ${{ secrets.VPS_SSH_KEY }}
         script: |
-          # Crear la carpeta si no existe
-          mkdir -p /root/apps/automations/expense-tracker-bot
-          
-          # Entrar al directorio
-          cd /root/apps/automations/expense-tracker-bot
-          
-          # Crear archivo .env desde secretos
-          echo "${{ secrets.ENV_FILE_EXPENSE }}" > .env
-          
-          # Reiniciar el servicio
+          set -e
+
+          mkdir -p ${{ env.APP_DIR }}
+          cd ${{ env.APP_DIR }}
+
+          if [ "${{ github.ref_name }}" = "develop" ]; then
+            echo "${{ secrets.ENV_FILE_EXPENSE_DEV }}" > .env
+          else
+            echo "${{ secrets.ENV_FILE_EXPENSE }}" > .env
+          fi
+          echo "DEPLOY_ENV=${{ env.DEPLOY_ENV }}" >> .env
+          echo "TRAEFIK_PATH_PREFIX=${{ env.TRAEFIK_PATH_PREFIX }}" >> .env
+          echo "IMAGE_NAME=${{ env.IMAGE_NAME }}" >> .env
+          echo "CONTAINER_NAME=${{ env.CONTAINER_NAME }}" >> .env
+          echo "TRAEFIK_ROUTER_NAME=${{ env.TRAEFIK_ROUTER_NAME }}" >> .env
+          echo "TRAEFIK_MIDDLEWARE_NAME=${{ env.TRAEFIK_MIDDLEWARE_NAME }}" >> .env
+          echo "COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}" >> .env
+          echo "COMPOSE_FILE=${{ env.COMPOSE_FILE }}" >> .env
+
           echo "🔄 Desplegando nueva versión..."
-          docker compose down
-          docker compose up -d --build
-          
-          # Limpiar imágenes viejas para ahorrar espacio
+          COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }} docker compose -f ${{ env.COMPOSE_FILE }} down
+          COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }} docker compose -f ${{ env.COMPOSE_FILE }} up -d --build
+
           docker image prune -f

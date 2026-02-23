@@ -5,9 +5,7 @@ from telegram import Update
 from telegram.ext import Application
 
 from app.core.config import Settings
-import uuid
-
-from app.core.logging import logger, set_client_ip, set_log_context, set_trace_id
+from app.core.logging import logger, set_client_ip, set_trace_id
 from app.core.rate_limit import rate_limiter
 
 
@@ -35,9 +33,8 @@ def build_telegram_router(telegram_app: Application, settings: Settings) -> APIR
     @router.post("/webhook")
     async def telegram_webhook(request: Request):
         client_host = request.client.host if request.client else "unknown"
-        set_trace_id(f"tx-{uuid.uuid4().hex}")
+        set_trace_id(f"wh-{client_host}")
         set_client_ip(client_host)
-        set_log_context("telegram", None, None, None)
         if settings.telegram_webhook_secret:
             token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if token != settings.telegram_webhook_secret:

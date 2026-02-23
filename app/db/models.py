@@ -93,3 +93,79 @@ class AuditEvent(Base):
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
     actor_user_id: Mapped[str] = mapped_column(String(64), nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=True)
+
+
+class RecurringExpense(Base):
+    __tablename__ = "recurring_expenses"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="cascade"), nullable=False)
+    service_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    recurrence_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_merchant: Mapped[str] = mapped_column(String(128), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=True)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    amount: Mapped[Numeric] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    recurrence: Mapped[str] = mapped_column(String(16), nullable=False)
+    billing_day: Mapped[int | None] = mapped_column(nullable=True)
+    billing_weekday: Mapped[int | None] = mapped_column(nullable=True)
+    billing_month: Mapped[int | None] = mapped_column(nullable=True)
+    anchor_date: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="America/Bogota")
+    payment_link: Mapped[str] = mapped_column(Text, nullable=True)
+    payment_reference: Mapped[str] = mapped_column(Text, nullable=True)
+    remind_offsets: Mapped[JSON] = mapped_column(JSONB, nullable=False, default=list)
+    reminder_hour: Mapped[int] = mapped_column(nullable=False, default=9)
+    next_due: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    auto_add_transaction: Mapped[Boolean] = mapped_column(Boolean, nullable=False, default=True)
+    canceled_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_tx_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_confirmed_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BillInstance(Base):
+    __tablename__ = "bill_instances"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    recurring_id: Mapped[int] = mapped_column(ForeignKey("recurring_expenses.id", ondelete="cascade"), nullable=False)
+    period_year: Mapped[int] = mapped_column(nullable=False)
+    period_month: Mapped[int] = mapped_column(nullable=False)
+    due_date: Mapped[Date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    amount: Mapped[Numeric | None] = mapped_column(Numeric(18, 2), nullable=True)
+    payment_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paid_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tx_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    follow_up_on: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BillInstanceReminder(Base):
+    __tablename__ = "bill_instance_reminders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    bill_instance_id: Mapped[int] = mapped_column(ForeignKey("bill_instances.id", ondelete="cascade"), nullable=False)
+    reminder_offset: Mapped[int] = mapped_column(nullable=False)
+    scheduled_for: Mapped[Date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    sent_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BotPendingAction(Base):
+    __tablename__ = "bot_pending_actions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="cascade"), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[JSON] = mapped_column(JSONB, nullable=False)
+    expires_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)

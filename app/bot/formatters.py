@@ -9,8 +9,8 @@ from .parser import escape_html, format_currency
 
 
 HELP_MESSAGE = (
-    "<b>Asistente financiero</b>\n\n"
-    "<b>Ejemplos</b>\n"
+    "ℹ️ <b>Asistente financiero</b>\n\n"
+    "<b>Registrar movimientos</b>\n"
     "• <code>comí un pan 5k</code>\n"
     "• <code>uber 12000</code>\n"
     "• <code>salario 2500000</code> (ingreso)\n\n"
@@ -18,12 +18,24 @@ HELP_MESSAGE = (
     "• <code>le presté 200k a Juan</code>\n"
     "• <code>Juan me pagó 50k</code>\n\n"
     "<b>Recurrentes</b>\n"
-    "• <code>Netflix 39900 mensual</code>\n\n"
-    "<b>Comandos</b>\n"
+    "• <code>Netflix 39900 mensual</code>\n"
+    "• <code>Recuérdame pagar todos los 5 el internet</code>\n"
+    "• <code>/recurrings</code> (ver códigos)\n"
+    "• <code>para código 12 avísame 3 días antes y el mismo día</code>\n"
+    "• <code>monto código 12 45000</code>\n"
+    "• <code>pausa netflix</code> / <code>sube luz a 70k</code> (lenguaje natural)\n"
+    "• <code>pausar código 12</code> / <code>activar código 12</code> / <code>cancelar código 12</code>\n\n"
+    "<b>Múltiples movimientos</b>\n"
+    "• <code>me gasté 5k en comida y 60k en ropa</code>\n"
+    "• Si hay ambigüedad, te pediré confirmar con <code>sí</code> o <code>no</code>\n\n"
+    "<b>Menú rápido</b>\n"
     "• <code>/list</code> últimos movimientos\n"
     "• <code>/summary</code> resumen del mes\n"
+    "• <code>/recurrings</code> ver recurrentes\n"
     "• <code>/download</code> o <code>/descargar</code> transacciones\n"
     "• <code>/undo</code> deshacer último\n"
+    "• <code>/clear</code> eliminar todas (con confirmación)\n"
+    "• <code>/clear_recurrings</code> eliminar recurrentes de tu lista (con confirmación)\n"
     "• <code>/start TU-TOKEN</code> activar cuenta\n\n"
     "<b>Notas</b>\n"
     "• Moneda por defecto: COP\n"
@@ -102,6 +114,38 @@ def format_add_tx_message(tx: Dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_multi_tx_preview_message(txs: List[Dict[str, object]]) -> str:
+    lines = [
+        f"🧠 <b>Detecté {len(txs)} movimientos</b>",
+        "<i>Revisa antes de guardar</i>",
+        "",
+    ]
+    for idx, tx in enumerate(txs, start=1):
+        amount = format_currency(float(tx.get("amount", 0)), str(tx.get("currency", "COP")))
+        category = escape_html(str(tx.get("category", "misc")))
+        detail = escape_html(str(tx.get("description") or tx.get("normalizedMerchant") or ""))
+        line = f"{idx}. <b>{amount}</b> · <b>{category}</b>"
+        if detail:
+            line += f" · {detail}"
+        lines.append(line)
+    lines.append("")
+    lines.append("Responde <code>sí</code> para guardar o <code>no</code> para cancelar.")
+    return "\n".join(lines)
+
+
+def format_multi_tx_saved_message(txs: List[Dict[str, object]]) -> str:
+    lines = [f"✅ <b>Guardé {len(txs)} movimientos</b>", ""]
+    for idx, tx in enumerate(txs, start=1):
+        amount = format_currency(float(tx.get("amount", 0)), str(tx.get("currency", "COP")))
+        category = escape_html(str(tx.get("category", "misc")))
+        detail = escape_html(str(tx.get("description") or tx.get("normalizedMerchant") or ""))
+        line = f"{idx}. {amount} · <b>{category}</b>"
+        if detail:
+            line += f" · {detail}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def format_list_message(transactions: List[Dict[str, object]]) -> str:
     def to_ts(item: Dict[str, object]) -> float:
         date_value = str(item.get("date") or "")
@@ -121,7 +165,7 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
     last10 = filtered[:10]
 
     if not last10:
-        return "📭 <b>Sin movimientos</b>\nAún no tienes transacciones registradas."
+        return "📭 <b>Sin movimientos</b>\nAún no tienes movimientos registrados."
 
     message = [
         "🧾 <b>Movimientos recientes</b>",
@@ -160,6 +204,60 @@ def format_list_message(transactions: List[Dict[str, object]]) -> str:
             message.append(f"<code>{date}</code>")
         message.append("")
 
+    return "\n".join(message).strip()
+
+
+def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
+    visible_items = [item for item in items if str(item.get("status") or "").lower() != "canceled"]
+    if not visible_items:
+        return "📭 <b>Sin recurrentes</b>\nNo tienes recordatorios recurrentes."
+
+    message = [
+        "🔁 <b>Recurrentes</b>",
+        "",
+    ]
+    for item in visible_items:
+        rid = item.get("id")
+        amount_value = float(item.get("amount", 0))
+        amount = "Por definir" if amount_value <= 0 else format_currency(amount_value, str(item.get("currency", "COP")))
+        merchant = escape_html(
+            str(item.get("service_name") or item.get("normalized_merchant") or item.get("description") or "Gasto recurrente")
+        )
+        recurrence_raw = str(item.get("recurrence") or "monthly").lower()
+        recurrence = {
+            "weekly": "semanal",
+            "biweekly": "quincenal",
+            "monthly": "mensual",
+            "quarterly": "trimestral",
+            "yearly": "anual",
+        }.get(recurrence_raw, recurrence_raw)
+        status_raw = str(item.get("status") or "pending").lower()
+        status = {
+            "active": "activo",
+            "paused": "pausado",
+            "pending": "pendiente",
+            "canceled": "cancelado",
+        }.get(status_raw, status_raw)
+        next_due = escape_html(str(item.get("next_due") or "—"))
+        reminder_hour = item.get("reminder_hour")
+        try:
+            reminder_hour_label = f"{int(reminder_hour):02d}:00"
+        except (TypeError, ValueError):
+            reminder_hour_label = "09:00"
+        message.append(f"🔹 <b>{merchant}</b>")
+        message.append(f"<b>Código:</b> <code>{rid}</code>")
+        message.append(f"<b>Monto:</b> {amount}")
+        message.append(f"<b>Frecuencia:</b> {escape_html(recurrence)}")
+        message.append(f"<b>Estado:</b> <b>{escape_html(status)}</b>")
+        message.append(f"<b>Próximo cobro:</b> <code>{next_due}</code>")
+        message.append(f"<b>Hora recordatorio:</b> <code>{escape_html(reminder_hour_label)}</code>")
+        message.append("")
+
+    message.append("Opciones para actualizar:")
+    message.append("• En lenguaje natural: <code>sube internet a 70k y avísame a las 6 pm</code>")
+    message.append("• Recordatorios: <code>para código 2 avísame 3 días antes y el mismo día</code>")
+    message.append("• Estado: <code>pausa netflix</code>, <code>activar código 3</code> o <code>cancelar spotify</code>")
+    message.append("• Limpiar todos: <code>/clear_recurrings</code>")
     return "\n".join(message).strip()
 
 
