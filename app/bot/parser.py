@@ -191,6 +191,15 @@ def parse_command(
             route = "recurring_edit"
         elif lower.startswith("monto ") or lower.startswith("amount "):
             route = "recurring_update_amount"
+        elif (
+            lower.startswith("enlace ")
+            or lower.startswith("enlance ")
+            or lower.startswith("link ")
+            or lower.startswith("url ")
+            or lower.startswith("referencia ")
+            or lower.startswith("ref ")
+        ):
+            route = "recurring_update_payment"
         elif lower.startswith("cancelar ") or lower.startswith("cancel "):
             route = "recurring_cancel"
         elif lower.startswith("pausar ") or lower.startswith("pausa ") or lower.startswith("pause "):

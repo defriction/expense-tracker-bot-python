@@ -23,6 +23,7 @@ HELP_MESSAGE = (
     "• <code>/recurrings</code> (ver códigos)\n"
     "• <code>para código 12 avísame 3 días antes y el mismo día</code>\n"
     "• <code>monto código 12 45000</code>\n"
+    "• <code>enlace código 12 https://pagosenlinea.com</code>\n"
     "• <code>pausa netflix</code> / <code>sube luz a 70k</code> (lenguaje natural)\n"
     "• <code>pausar código 12</code> / <code>activar código 12</code> / <code>cancelar código 12</code>\n\n"
     "<b>Múltiples movimientos</b>\n"
@@ -255,6 +256,7 @@ def format_recurring_list_message(items: List[Dict[str, object]]) -> str:
 
     message.append("Opciones para actualizar:")
     message.append("• En lenguaje natural: <code>sube internet a 70k y avísame a las 6 pm</code>")
+    message.append("• Enlace de pago: <code>enlace código 2 https://pagos.com</code>")
     message.append("• Recordatorios: <code>para código 2 avísame 3 días antes y el mismo día</code>")
     message.append("• Estado: <code>pausa netflix</code>, <code>activar código 3</code> o <code>cancelar spotify</code>")
     message.append("• Limpiar todos: <code>/clear_recurrings</code>")

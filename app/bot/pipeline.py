@@ -576,6 +576,11 @@ class BotPipeline(PipelineBase):
             if natural_ai is not None:
                 return [natural_ai]
             return [self._handle_recurring_update_amount(auth_result.user, command.text)]
+        if command.route == "recurring_update_payment":
+            natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
+            if natural_ai is not None:
+                return [natural_ai]
+            return [self._handle_recurring_update_payment(auth_result.user, command.text)]
         if command.route == "recurring_cancel":
             natural_ai = await self._try_handle_recurring_natural_ai(auth_result.user, command.text or "")
             if natural_ai is not None:
@@ -1003,6 +1008,8 @@ class BotPipeline(PipelineBase):
             r"\b(codigo|c[oó]digo)\s*#?\s*\d+\b.*\b(cambiar|actualizar|monto|valor|hora|pausar|activar|cancelar)\b",
             r"\b(a\s+las\s+\d{1,2}(:\d{2})?\s*(am|pm)?)\b",
             r"\b(sube|subir|baja|bajar|ajusta|ajustar|cambia|cambiar|actualiza|actualizar|monto|valor|pausa|pausar|activar|activa|cancelar|cancela)\b",
+            r"\b(enlace|enalce|enlance|link|url|portal|referencia|ref)\b",
+            r"(https?://[^\s]+|www\.[^\s]+)",
         ]
         return any(re.search(pattern, t) for pattern in patterns)
 
@@ -1045,6 +1052,8 @@ class BotPipeline(PipelineBase):
                     '  "target_id": number|null,\n'
                     '  "service_name": string|null,\n'
                     '  "amount": number|null,\n'
+                    '  "payment_link": string|null,\n'
+                    '  "payment_reference": string|null,\n'
                     '  "recurrence": "weekly|biweekly|monthly|quarterly|yearly"|null,\n'
                     '  "billing_day": number|null,\n'
                     '  "reminder_hour": number|null,\n'
@@ -1059,14 +1068,18 @@ class BotPipeline(PipelineBase):
                     "- includes_same_day=true cuando aparezca 'mismo día', 'el día', 'día del cobro', 'hoy', '0 días'.\n"
                     "- Si includes_same_day=true, asegúrate de incluir 0 en remind_offsets.\n"
                     "- amount: número absoluto (ej: 56k->56000).\n"
+                    "- payment_link: URL si aparece (http/https o www).\n"
+                    "- payment_reference: referencia/convenio/cuenta si aparece.\n"
                     "- target_id: solo si el texto menciona ID explícito.\n\n"
                     "Ejemplos:\n"
                     "Input: 'ID 2 actualizar a las 3 pm, recordatorio 3 dias y el mismo dia'\n"
                     'Output: {"intent":"update","target_id":2,"service_name":null,"amount":null,"recurrence":null,"billing_day":null,"reminder_hour":15,"remind_offsets":[3,0],"includes_same_day":true,"confidence":0.93}\n'
                     "Input: 'pago recurrente de 56k para luz a las 6 pm'\n"
-                    'Output: {"intent":"create","target_id":null,"service_name":"luz","amount":56000,"recurrence":"monthly","billing_day":null,"reminder_hour":18,"remind_offsets":[],"includes_same_day":false,"confidence":0.89}\n'
+                    'Output: {"intent":"create","target_id":null,"service_name":"luz","amount":56000,"payment_link":null,"payment_reference":null,"recurrence":"monthly","billing_day":null,"reminder_hour":18,"remind_offsets":[],"includes_same_day":false,"confidence":0.89}\n'
+                    "Input: 'este es el enlance del código 1: https://pagos.com ref 778899'\n"
+                    'Output: {"intent":"update","target_id":1,"service_name":null,"amount":null,"payment_link":"https://pagos.com","payment_reference":"778899","recurrence":null,"billing_day":null,"reminder_hour":null,"remind_offsets":[],"includes_same_day":false,"confidence":0.95}\n'
                     "Input: 'almuerzo 20000'\n"
-                    'Output: {"intent":"none","target_id":null,"service_name":null,"amount":null,"recurrence":null,"billing_day":null,"reminder_hour":null,"remind_offsets":[],"includes_same_day":false,"confidence":0.98}'
+                    'Output: {"intent":"none","target_id":null,"service_name":null,"amount":null,"payment_link":null,"payment_reference":null,"recurrence":null,"billing_day":null,"reminder_hour":null,"remind_offsets":[],"includes_same_day":false,"confidence":0.98}'
                 ),
                 raw,
             )
@@ -1127,6 +1140,31 @@ class BotPipeline(PipelineBase):
         amount = parsed.get("amount")
         if isinstance(amount, (int, float)) and float(amount) >= 0:
             updates["amount"] = round(float(amount), 2)
+        elif re.search(r"\b(monto|valor|sube|subir|baja|bajar|ajusta|ajustar|cambia|cambiar|actualiza|actualizar)\b", self._norm_match(raw)):
+            inferred_amount = parse_amount_in_context(raw)
+            if inferred_amount is not None and inferred_amount >= 0:
+                updates["amount"] = round(float(inferred_amount), 2)
+
+        payment_link = str(parsed.get("payment_link") or "").strip()
+        if payment_link and re.match(r"^(https?://|www\.)", payment_link, flags=re.IGNORECASE):
+            if payment_link.lower().startswith("www."):
+                payment_link = f"https://{payment_link}"
+            updates["payment_link"] = payment_link[:500]
+        else:
+            link_match = re.search(r"(https?://[^\s]+|www\.[^\s]+)", raw, flags=re.IGNORECASE)
+            if link_match:
+                inferred_link = link_match.group(1).rstrip(".,;:)>]}\"'")
+                if inferred_link.lower().startswith("www."):
+                    inferred_link = f"https://{inferred_link}"
+                updates["payment_link"] = inferred_link[:500]
+
+        payment_reference = str(parsed.get("payment_reference") or "").strip()
+        if payment_reference:
+            updates["payment_reference"] = payment_reference[:500]
+        else:
+            ref_match = re.search(r"\b(?:referencia|ref(?:erencia)?|convenio|cuenta)\s*[:#-]?\s*([A-Za-z0-9\-_.]{3,64})\b", raw, flags=re.IGNORECASE)
+            if ref_match:
+                updates["payment_reference"] = ref_match.group(1)[:500]
         recurrence = str(parsed.get("recurrence") or "").lower()
         if recurrence in {"weekly", "biweekly", "monthly", "quarterly", "yearly"}:
             updates["recurrence"] = recurrence
@@ -1256,6 +1294,9 @@ class BotPipeline(PipelineBase):
         matched_targets = self._find_recurring_by_text(user_id, raw)
         has_target_match = bool(matched_targets)
         has_recurring_hint = bool(re.search(r"\b(recurrente|recurrentes|suscripcion|suscripciones|recordatorio|recordatorios)\b", norm))
+        has_link_update_hint = bool(re.search(r"\b(enlace|enlance|link|url|portal|referencia|ref)\b", norm))
+        has_update_verb = bool(re.search(r"\b(actualiza|actualizar|cambia|cambiar|agrega|agregar|pon|poner|deja)\b", norm))
+        has_url = bool(re.search(r"(https?://[^\s]+|www\.[^\s]+)", raw, flags=re.IGNORECASE))
 
         if re.search(r"\b(recordame|recuerdame|avisame)\b", norm) and re.search(
             r"\b(pagar|pago|factura|recibo|cobro|suscripcion)\b",
@@ -1265,6 +1306,13 @@ class BotPipeline(PipelineBase):
 
         if re.search(r"\b(nuevo|crear|crea|agregar|agrega)\b.*\b(recordatorio|recurrente|suscripcion)\b", norm):
             return self._start_recurring_from_text(user, raw)
+
+        if has_url and (
+            has_explicit_id
+            or (has_target_match and has_update_verb)
+            or (has_link_update_hint and (has_update_verb or has_recurring_hint))
+        ):
+            return self._handle_recurring_update_payment(user, raw)
 
         if re.search(r"\b(recordatorios?|avisos?)\b", norm) and re.search(r"\d+\s*,\s*\d+", raw):
             offsets = parse_remind_offsets(raw)
@@ -1689,6 +1737,53 @@ class BotPipeline(PipelineBase):
             return self._make_message(RECURRING_NOT_FOUND_MESSAGE, _kb([ACTION_RECURRINGS, ACTION_HELP]))
         self._get_repo().update_recurring_expense(recurring_id, {"amount": amount})
         return self._make_message("✅ Monto actualizado.", _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
+
+    def _handle_recurring_update_payment(self, user: Dict[str, Any], text: str) -> BotMessage:
+        content = (text or "").strip()
+        if not content:
+            return self._make_message(
+                "ℹ️ Uso: <code>enlace código 12 https://...</code> o <code>referencia código 12 12345</code>",
+                _kb([ACTION_RECURRINGS, ACTION_HELP]),
+            )
+
+        recurring_id, err = self._resolve_recurring_target(user, content)
+        if err:
+            return err
+
+        link_match = re.search(r"(https?://[^\s]+|www\.[^\s]+)", content, flags=re.IGNORECASE)
+        payment_link = ""
+        if link_match:
+            payment_link = link_match.group(1).rstrip(".,;:)>]}\"'")
+            if payment_link.lower().startswith("www."):
+                payment_link = f"https://{payment_link}"
+            payment_link = payment_link[:500]
+
+        payment_reference = ""
+        ref_match = re.search(r"\b(?:referencia|ref(?:erencia)?|convenio|cuenta)\s*[:#-]?\s*([A-Za-z0-9\-_.]{3,64})\b", content, flags=re.IGNORECASE)
+        if ref_match:
+            payment_reference = ref_match.group(1)[:500]
+
+        if not payment_link and not payment_reference:
+            return self._make_message(
+                "⚠️ No encontré enlace ni referencia para actualizar.\n"
+                "Ejemplo: <code>enlace código 12 https://pagos.com</code>",
+                _kb([ACTION_RECURRINGS, ACTION_HELP]),
+            )
+
+        updates: Dict[str, Any] = {}
+        if payment_link:
+            updates["payment_link"] = payment_link
+        if payment_reference:
+            updates["payment_reference"] = payment_reference
+        self._get_repo().update_recurring_expense(int(recurring_id), updates)
+
+        if payment_link and payment_reference:
+            msg = "✅ Enlace y referencia actualizados."
+        elif payment_link:
+            msg = "✅ Enlace actualizado."
+        else:
+            msg = "✅ Referencia actualizada."
+        return self._make_message(msg, _kb([ACTION_RECURRINGS, ACTION_LIST], [ACTION_SUMMARY, ACTION_HELP]))
 
     def _handle_recurring_cancel(self, user: Dict[str, Any], text: str) -> BotMessage:
         parts = (text or "").strip().split()
