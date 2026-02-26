@@ -1862,11 +1862,58 @@ class BotPipeline(PipelineBase):
             _kb_main(),
         )
 
+    def _resolve_daily_nudge_action(self, data: str) -> tuple[Optional[str], Optional[int]]:
+        raw = (data or "").strip()
+        if not raw:
+            return None, None
+
+        parts = raw.split(":")
+        if len(parts) >= 2 and parts[0].strip().lower() == "dailynudge":
+            return parts[1].strip().lower(), None
+
+        norm = self._norm_match(raw)
+        if not norm:
+            return None, None
+
+        if re.search(r"\b(ejemplo|ejemplos|ideas)\b", norm):
+            return "examples", None
+
+        if re.search(r"^(silenciar|silencia|mutear|apagar|desactivar)\b", norm):
+            if norm in {"silenciar", "silencia", "mutear", "apagar", "desactivar"} or re.search(
+                r"\b(recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b",
+                norm,
+            ):
+                return "silence", None
+
+        if re.search(r"^(activar|activa|encender|habilitar|habilita|reanudar|reactivar)\b", norm):
+            if norm in {"activar", "activa", "encender", "habilitar", "habilita", "reanudar", "reactivar"} or re.search(
+                r"\b(recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b",
+                norm,
+            ):
+                return "enable", None
+
+        inline_hour = parse_reminder_hour(raw)
+        if inline_hour is not None:
+            if (
+                re.search(r"\b(cambiar|cambia|ajustar|ajusta|configurar|configura|poner|pon|hora)\b", norm)
+                and re.search(r"\b(recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos|hora)\b", norm)
+            ):
+                return "set_hour", int(inline_hour)
+            if re.search(r"^(hora)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b", norm):
+                return "set_hour", int(inline_hour)
+
+        if re.search(r"\b(cambiar|cambia|ajustar|ajusta|configurar|configura)\b", norm) and re.search(
+            r"\b(hora|recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b",
+            norm,
+        ):
+            return "set_hour", None
+
+        return None, None
+
     def _handle_daily_nudge_action(self, user: Dict[str, Any], data: str) -> BotMessage:
-        parts = (data or "").split(":")
-        if len(parts) < 2:
+        action, inline_hour = self._resolve_daily_nudge_action(data)
+        if not action:
             return self._make_message(RECURRING_INVALID_ACTION_MESSAGE)
-        action = parts[1].strip().lower()
         user_id = str(user.get("userId"))
         prefs = self._get_daily_nudge_prefs(user_id)
         current_hour = int(prefs.get("hour", 19))
@@ -1898,6 +1945,12 @@ class BotPipeline(PipelineBase):
             )
 
         if action == "set_hour":
+            if inline_hour is not None:
+                self._save_daily_nudge_prefs(user_id, enabled=True, hour=int(inline_hour))
+                return self._make_message(
+                    f"✅ Listo. Cambié la hora del recordatorio a las <b>{self._hour_label(int(inline_hour))}</b>.",
+                    _kb([BotAction("dailynudge:set_hour", "🕖 Cambiar hora")], [ACTION_HELP]),
+                )
             self._upsert_pending_action(user_id, PENDING_DAILY_NUDGE_SET_HOUR, {"from": "daily_nudge"}, ttl_minutes=60)
             return self._make_message(
                 "🕖 ¿A qué hora quieres el recordatorio diario?\nResponde con una hora. Ej: <code>19</code> o <code>7 pm</code>.",

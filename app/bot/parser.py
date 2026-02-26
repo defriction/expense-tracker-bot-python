@@ -4,6 +4,7 @@ import html
 import json
 import random
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -187,10 +188,47 @@ def parse_command(
         route = "clear_recurrings"
     else:
         lower = clean.lower()
+        norm = unicodedata.normalize("NFD", lower)
+        norm = "".join(ch for ch in norm if unicodedata.category(ch) != "Mn")
+        norm = re.sub(r"\s+", " ", norm).strip()
         if lower.startswith("recordatorios ") or lower.startswith("reminders "):
             route = "recurring_edit"
         elif lower.startswith("monto ") or lower.startswith("amount "):
             route = "recurring_update_amount"
+        elif (
+            re.search(
+                r"^(silenciar|silencia|mutear|apagar|desactivar)\b",
+                norm,
+            )
+            and (
+                norm in {"silenciar", "silencia", "mutear", "apagar", "desactivar"}
+                or re.search(r"\b(recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b", norm)
+            )
+        ):
+            route = "daily_nudge_action"
+        elif (
+            re.search(
+                r"^(activar|activa|encender|habilitar|habilita|reanudar|reactivar)\b",
+                norm,
+            )
+            and (
+                norm in {"activar", "activa", "encender", "habilitar", "habilita", "reanudar", "reactivar"}
+                or re.search(r"\b(recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b", norm)
+            )
+        ):
+            route = "daily_nudge_action"
+        elif (
+            re.search(r"\b(ejemplo|ejemplos|ideas)\b", norm)
+            and re.search(r"\b(recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b", norm)
+        ):
+            route = "daily_nudge_action"
+        elif (
+            re.search(r"\b(cambiar|cambia|ajustar|ajusta|configurar|configura|poner|pon)\b", norm)
+            and re.search(r"\b(hora|recordatorio|recordatorios|notificacion|notificaciones|aviso|avisos)\b", norm)
+        ):
+            route = "daily_nudge_action"
+        elif re.search(r"^(hora)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b", norm):
+            route = "daily_nudge_action"
         elif (
             lower.startswith("enlace ")
             or lower.startswith("enlance ")
