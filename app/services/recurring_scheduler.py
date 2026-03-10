@@ -243,7 +243,9 @@ async def process_recurring_reminders(
     settings: Settings,
     evolution_client: Optional[EvolutionClient] = None,
 ) -> None:
-    await _process_daily_expense_nudges(repo, bot, settings, evolution_client)
+    # Daily inactivity nudges are intentionally disabled.
+    # Keep the implementation in place in case this feature needs to be re-enabled later.
+    # await _process_daily_expense_nudges(repo, bot, settings, evolution_client)
 
     today = get_today(settings)
     repo.mark_overdue_bill_instances(today.isoformat())
